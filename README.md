@@ -88,6 +88,60 @@ offline bundled dataset, not a live source), `laun` (a calculator, not a data re
 `hafogvatn`'s "embedded JSON inside static HTML" sits right on the scraping/API line and wasn't attempted
 this round — worth a closer look before deciding either way.
 
+### `stjornarradid.is/gogn/urskurdir-og-alit-/` — administrative tribunal rulings, blocked on Blazor Server
+
+Not from the jokull/icelandic-data list — found separately. This is a large, genuinely valuable source: **23,382
+rulings/opinions** (as observed live, 2026-09-04) from roughly 38 administrative appeal boards and tribunals —
+a quasi-judicial layer distinct from `search_court_rulings`' ordinary courts. Filterable by ministry (14
+ráðuneyti) and year (1970–2026 in the UI). The full list of boards/categories, as shown in the page's own
+filter dropdown:
+
+Áfrýjunarnefnd í kærumálum háskólanema · Álit á sviði sveitarstjórnarmála · Endurupptökunefnd · Félagsdómur ·
+Kærunefnd húsamála · Kærunefnd jafnréttismála · Kærunefnd útboðsmála · Kærunefnd útlendingamála ·
+Mannanafnanefnd · Matsnefnd eignarnámsbóta · Matsnefnd samkvæmt lögum um lax- og silungsveiði · Nefnd vegna
+lausnar um stundarsakir · Stjórnsýslukærur - úrskurðir · Úrskurðarnefnd kosningamála · Úrskurðarnefnd
+raforkumála · Úrskurðarnefnd samkvæmt lögum um hollustuhætti og mengunarvarnir · Úrskurðarnefnd um
+leiðréttingu verðtryggðra fasteignaveðlána · Úrskurðarnefnd um upplýsingamál · Úrskurðarnefnd velferðarmála
+(six sub-categories: Almannatryggingar, Atvinnuleysistryggingar og vinnumarkaðsaðgerðir, Barnaverndarmál,
+Fæðingar- og foreldraorlof, Félagsþjónusta og húsnæðismál, Greiðsluaðlögunarmál) · Úrskurðir á málefnasviði
+innviðaráðuneytisins · Úrskurðir á málefnasviðum menningar-, nýsköpunar- og háskólaráðuneytisins · Úrskurðir
+félags- og húsnæðismálaráðuneytisins · Úrskurðir ferðaþjónusta · Úrskurðir forsætisráðuneytisins · Úrskurðir
+heilbrigðisráðuneytis · Úrskurðir innanríkisráðuneytisins á sviði útlendingamála fram til 1. janúar 2015 ·
+Úrskurðir landskjörstjórnar · Úrskurðir mennta- og barnamálaráðuneytisins · Úrskurðir um matvæli og landbúnað
+· Úrskurðir um sjávarútveg og fiskeldi · Úrskurðir umhverfis-, orku- og loftslagsráðuneytisins · Úrskurðir
+utanríkisráðuneytisins · Úrskurðir vegna kosninga · Úrskurðir velferðarráðuneytisins 2011-2018 · Úrskurðir
+viðskiptamál · Yfirfasteignamatsnefnd.
+
+**Why it's blocked, in detail (all verified live, not assumed):**
+
+- The site runs on the same Veva/Umbra CMS as `stjornarradid.is`'s fjárlög page (`.NET`, Blazor Server —
+  `blazor.web.js`, `<!--Blazor:{"type":"server",...}-->` markers in the raw HTML), not the Next.js/GraphQL
+  pattern the island.is-family sites use (which is why `search_regulations`, `search_court_rulings`, and
+  `search_stjornartidindi` all turned out to be tractable and this one doesn't).
+- `curl -A "Mozilla/5.0" https://www.stjornarradid.is/gogn/urskurdir-og-alit-/` returns **200 OK but only
+  5,598 bytes** — an empty page shell with no result data.
+- Loading the same URL in a real browser and reading the rendered DOM (`document.documentElement.outerHTML`)
+  gives **349,625 bytes**, with real content: "Sýni 1-12 af 23382 niðurstöðum" and actual ruling entries
+  (date, board name, case number, one-line summary).
+- Checked the browser's network log across the full page load: **no XHR/fetch call to any JSON or REST
+  endpoint carries the result data** — every non-asset request is a static `.js`/`.css` file. Blazor Server
+  pushes rendered UI updates over a live WebSocket (SignalR) circuit, which doesn't appear as a normal
+  HTTP resource entry and has no REST equivalent to call directly.
+- Checked for a separate, non-Blazor domain some individual boards might run instead (the way Persónuvernd
+  or other agencies sometimes do): `kaerunefnd.is` and `urskurdarnefndir.is` don't resolve; `urskurdir.is`
+  resolves but only redirects (not explored further, low confidence it's a real alternate site).
+
+**What it would take to actually build this:**
+1. Headless browser automation (Playwright or similar) driving a real Blazor Server circuit — a genuine new
+   runtime dependency this PoC has deliberately avoided everywhere else (the same reason `hms`,
+   `landlaeknir`, `tekjusagan`, etc. are excluded above), or
+2. Reverse-engineering Blazor Server's SignalR wire protocol directly — more fragile than anything else in
+   this codebase, no stable public contract, likely to break silently on any Blazor/.NET version bump on
+   their end.
+
+Neither was attempted — this needs an explicit decision (see conversation history) before committing to
+either approach, since it's a real architecture change, not just another adapter.
+
 ## Why this is a good first PoC
 
 It demonstrates the hard part of the idea with publicly observable material:

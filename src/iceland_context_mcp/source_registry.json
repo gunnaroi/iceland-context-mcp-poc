@@ -67,5 +67,13 @@
     "base_url": "https://island.is/stjornartidindi",
     "machine_source": "https://island.is/api/graphql",
     "notes": "Public, unauthenticated GraphQL (same endpoint as this PoC's court-ruling/vehicle/regulation-adjacent tools): officialJournalOfIcelandAdverts for search, officialJournalOfIcelandAdvert(params:{id}) for one advert's full text. department: a-deild (laws/presidential acts), b-deild (regulations/administrative notices — the great majority of ~40k total adverts), c-deild (international agreements). The search resolver 500s if dateFrom/dateTo are passed as explicit null rather than omitted (verified live) — this PoC's tool omits the keys entirely when unset."
+  },
+  "urskurdir_og_alit": {
+    "name": "Úrskurðir og álit — administrative tribunal rulings",
+    "publisher": "Government of Iceland (~38 appeal boards/nefndir across 14 ministries)",
+    "authority_class": "D",
+    "authority_label": "Official administrative tribunal ruling — quasi-judicial, distinct from ordinary court judgments (see search_court_rulings) and from enacted law",
+    "base_url": "https://www.stjornarradid.is/gogn/urskurdir-og-alit-/",
+    "notes": "NOT YET RETRIEVABLE — no tool implemented. 23,382 rulings observed live (2026-09-04) across boards including Kærunefnd útboðsmála, Kærunefnd útlendingamála, Úrskurðarnefnd velferðarmála (6 sub-categories), Yfirfasteignamatsnefnd, and ~34 more (full list in README). Blocked on Blazor Server rendering (same Veva/Umbra CMS as stjornarradid.is's fjárlög page): curl gets a 5.6KB empty shell, a real browser renders 349KB with actual results, and no JSON/REST endpoint carries the data in the network log — content arrives over a live WebSocket (SignalR) circuit with no HTTP equivalent. Would need Playwright-class browser automation (a real new runtime dependency, deliberately avoided elsewhere in this PoC) or reverse-engineering the Blazor Server wire protocol (fragile, no stable contract). See README 'stjornarradid.is/gogn/urskurdir-og-alit-/' section for full investigation detail, including domains checked for a non-Blazor alternative (none panned out)."
   }
 }
