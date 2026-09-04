@@ -56,7 +56,8 @@
     "authority_class": "A1-EU",
     "authority_label": "Official EU legal source",
     "base_url": "https://eur-lex.europa.eu/",
-    "notes": "An EU act appearing here must never, by that fact alone, be represented as applicable Icelandic law."
+    "machine_source": "https://publications.europa.eu/webapi/rdf/sparql",
+    "notes": "An EU act appearing here must never, by that fact alone, be represented as applicable Icelandic law. get_eur_lex_act fetches metadata via the public CELLAR SPARQL endpoint (SELECT query, CDM ontology predicates) and full text via CELLAR's content-negotiated REST endpoint (publications.europa.eu/resource/celex/{CELEX}) — the same backend eur-lex.europa.eu itself runs on, no API key. The REST fetch requires an explicit Accept: application/xhtml+xml, text/html header; without it CELLAR silently serves a much shorter metadata-only representation instead of erroring (confirmed live — verify text length looks plausible for the act, not just that the call succeeded). end_of_validity uses 9999-12-31 as its 'no end date' sentinel upstream; this tool converts that to null. No Icelandic-language expressions exist (Iceland is not an EU member) — supported languages are en/da/de/fr/sv."
   },
   "stjornartidindi": {
     "name": "Stjórnartíðindi",

@@ -4,13 +4,19 @@ import base64
 import io
 import json
 import re
+import warnings
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
 import pdfplumber
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+
+# CELLAR/EUR-Lex serves XHTML; parsing it with BeautifulSoup's HTML parser (as
+# every other adapter in this module does, deliberately, for a consistent
+# get_text() pattern) is intentional here, not an oversight this warning should flag.
+warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
 from .models import (
     BillDocument,
@@ -21,6 +27,7 @@ from .models import (
     CourtRulingSearchResult,
     EeaField,
     EeaResult,
+    EurLexActResult,
     LawBasisReference,
     LawResult,
     Provenance,
@@ -185,6 +192,100 @@ async def fetch_efta(celex: str) -> EeaResult:
             authority_class=source.authority_class,
             authority_label=source.authority_label,
             warning=source.notes,
+        ),
+    )
+
+
+CELLAR_SPARQL_ENDPOINT = "https://publications.europa.eu/webapi/rdf/sparql"
+CELLAR_REST_BASE = "https://publications.europa.eu/resource/celex"
+
+CELLAR_METADATA_QUERY = """
+PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+SELECT DISTINCT ?title ?dateDoc ?dateForce ?dateEnd ?inForce ?resType WHERE {{
+  ?work cdm:resource_legal_id_celex "{celex}"^^xsd:string .
+  ?expr cdm:expression_belongs_to_work ?work .
+  ?expr cdm:expression_uses_language <http://publications.europa.eu/resource/authority/language/{lang3}> .
+  ?expr cdm:expression_title ?title .
+  OPTIONAL {{ ?work cdm:work_date_document ?dateDoc . }}
+  OPTIONAL {{ ?work cdm:resource_legal_date_entry-into-force ?dateForce . }}
+  OPTIONAL {{ ?work cdm:resource_legal_date_end-of-validity ?dateEnd . }}
+  OPTIONAL {{ ?work cdm:resource_legal_in-force ?inForce . }}
+  OPTIONAL {{
+    ?work cdm:work_has_resource-type ?resTypeUri .
+    ?resTypeUri skos:prefLabel ?resType .
+    FILTER(lang(?resType) = "en")
+  }}
+}}
+LIMIT 1
+"""
+
+# EUR-Lex/CELLAR uses ISO 639-2/B three-letter codes, not the ISO 639-1 codes
+# used elsewhere in this file. Icelandic is deliberately absent: Iceland is not
+# an EU member and EUR-Lex publishes no Icelandic-language expressions.
+EUR_LEX_LANGUAGES = {"en": "ENG", "da": "DAN", "de": "DEU", "fr": "FRA", "sv": "SWE"}
+
+
+async def fetch_eur_lex_act(celex: str, language: str = "en") -> EurLexActResult:
+    celex = normalize_celex(celex)
+    if language not in EUR_LEX_LANGUAGES:
+        raise ValueError(f"Unsupported language {language!r}. Supported: {', '.join(sorted(EUR_LEX_LANGUAGES))}.")
+    lang3 = EUR_LEX_LANGUAGES[language]
+
+    query = CELLAR_METADATA_QUERY.format(celex=celex, lang3=lang3)
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
+        meta_response = await client.get(
+            CELLAR_SPARQL_ENDPOINT,
+            params={"query": query, "format": "application/sparql-results+json"},
+        )
+        meta_response.raise_for_status()
+        bindings = meta_response.json()["results"]["bindings"]
+    if not bindings:
+        raise ValueError(f"No CELLAR expression found for CELEX {celex!r} in language {language!r}.")
+    row = bindings[0]
+
+    def _val(key: str) -> str | None:
+        return row[key]["value"] if key in row else None
+
+    end_of_validity = _val("dateEnd")
+    if end_of_validity == "9999-12-31":
+        end_of_validity = None  # CELLAR's sentinel for "no end date set", not a real date
+
+    # CELLAR content-negotiates on Accept/Accept-Language: without an explicit
+    # Accept for (x)html, it silently serves a different, much shorter metadata
+    # representation instead of the full act text — no error, just wrong content.
+    http_lang = {"en": "en", "da": "da", "de": "de", "fr": "fr", "sv": "sv"}[language]
+    async with httpx.AsyncClient(
+        timeout=timeout, headers={"User-Agent": USER_AGENT}, follow_redirects=True
+    ) as client:
+        content_response = await client.get(
+            f"{CELLAR_REST_BASE}/{celex}",
+            headers={"Accept": "application/xhtml+xml, text/html", "Accept-Language": http_lang},
+        )
+        content_response.raise_for_status()
+        if len(content_response.content) > PDF_MAX_BYTES:
+            raise ValueError(f"CELLAR document exceeded PoC safety limit ({PDF_MAX_BYTES // 1_000_000} MB).")
+    soup = BeautifulSoup(content_response.text, "lxml")
+    text = _clean_text(soup)
+
+    source = registry_record("eur_lex")
+    return EurLexActResult(
+        celex=celex,
+        title=_val("title"),
+        document_date=_val("dateDoc"),
+        entry_into_force_date=_val("dateForce"),
+        end_of_validity_date=end_of_validity,
+        in_force=(_val("inForce") == "1") if _val("inForce") is not None else None,
+        resource_type=_val("resType"),
+        text=text,
+        provenance=Provenance(
+            publisher=source.publisher,
+            source_url=str(content_response.url),
+            retrieved_at=utc_now(),
+            authority_class=source.authority_class,
+            authority_label=source.authority_label,
         ),
     )
 

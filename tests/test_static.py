@@ -124,3 +124,18 @@ def test_open_data_registry_new_sources():
     assert lmi.wfs_version == "2.0.0"
     umferd = open_data_registry_record("umferd")
     assert umferd.wfs_version == "1.0.0"
+
+
+def test_eur_lex_rejects_unsupported_language():
+    from iceland_context_mcp.sources import fetch_eur_lex_act
+
+    async def run():
+        await fetch_eur_lex_act("32016R0679", language="is")
+
+    import asyncio
+
+    try:
+        asyncio.run(run())
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "Unsupported language" in str(e)

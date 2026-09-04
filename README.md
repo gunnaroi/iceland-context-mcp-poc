@@ -16,6 +16,7 @@ The first version exposes:
 - `get_bill(malnr, thing, malsflokkur)` — Alþingi parliamentary matter (bill/resolution/question) with status, subject categories and its document trail (stjórnarfrumvarp/nefndarálit/breytingartillaga/...);
 - `get_bill_document(thing, document_number)` — full text of one þingskjal from that trail (HTML normally, falling back to the document's own PDF when there's no inline text — e.g. fjárlög, the state budget, which is itself legislation and PDF-only; its enacted-law PDF is the canonical source for exact appropriation figures, not a ministry CSV mirror);
 - `search_court_rulings(query, court, date_from, date_to, law_citation)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight; `law_citation` filters by a curated whole-law citation tag;
+- `get_eur_lex_act(celex, language)` — official EU act text and metadata via the public CELLAR SPARQL + REST endpoints (no API key) — the EU-law side of the chain;
 - `get_iceland_eea_status(celex)` — public EES-gagnagrunnur retrieval;
 - `get_efta_eea_factsheet(celex)` — public EFTA EEA-Lex retrieval;
 - `trace_eea_public_context(celex)` — combines the two EEA evidence sources;
@@ -211,7 +212,19 @@ Remaining, roughly in order:
    There is still no structured **regulation**→judgment link (only law→judgment via `law_citation`, and
    regulation→law via `get_regulation`'s `law_basis`) — extending `_extract_law_basis`'s pattern to scan a
    ruling's full text for every `laga/reglugerðar nr. X/Y` mention remains the open path for that gap;
-5. EUR-Lex/CELLAR as the EU machine source.
+5. **Implemented**: `get_eur_lex_act(celex, language)` retrieves official EU act text and metadata directly
+   from CELLAR (metadata via its public SPARQL endpoint using the CDM ontology, text via its
+   content-negotiated REST endpoint) — the same backend eur-lex.europa.eu itself runs on, no API key. Modeled
+   on the query patterns from two actively-maintained open-source EUR-Lex MCP servers
+   ([cyanheads/eur-lex-mcp-server](https://github.com/cyanheads/eur-lex-mcp-server),
+   [Honeyfield-Org/eurlex-mcp-server](https://github.com/Honeyfield-Org/eurlex-mcp-server), both Cellar-based
+   with no auth) rather than a third one ([scimorph/eur-lex-mcp](https://github.com/scimorph/eur-lex-mcp))
+   that wraps EUR-Lex's legacy SOAP webservice and requires registered credentials — disqualified by this
+   PoC's no-credentials scope. One real bug caught before shipping: the REST fetch needs an explicit
+   `Accept: application/xhtml+xml, text/html` header — without it, CELLAR silently serves a much shorter
+   metadata-only representation instead of the actual act text, no error at all (first attempt returned 742
+   characters of EuroVoc keywords for a regulation whose real text is 372K+ characters; caught by checking the
+   output looked implausibly short, not by any error signal).
 
 Keep the MCP tool surface stable while swapping brittle HTML adapters for supported source contracts.
 

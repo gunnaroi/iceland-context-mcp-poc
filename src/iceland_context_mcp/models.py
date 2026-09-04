@@ -82,6 +82,26 @@ class EeaCombinedResult(BaseModel):
     )
 
 
+class EurLexActResult(BaseModel):
+    celex: str
+    title: str | None = None
+    document_date: str | None = None
+    entry_into_force_date: str | None = None
+    end_of_validity_date: str | None = None
+    in_force: bool | None = None
+    resource_type: str | None = None
+    text: str
+    provenance: Provenance
+    status_note: str = (
+        "Official EU act text and metadata from the Publications Office's CELLAR repository (the same backend "
+        "eur-lex.europa.eu itself runs on) — metadata via SPARQL, text via content-negotiated REST fetch. "
+        "in_force/end_of_validity_date describe EU law only: an EU act being in force says nothing about "
+        "Icelandic applicability by itself. Use get_iceland_eea_status/get_efta_eea_factsheet/"
+        "trace_eea_public_context for the EEA/Icelandic side of the chain — EU status, EEA incorporation, "
+        "and Icelandic implementation/commencement are each separate facts."
+    )
+
+
 class RegulationAmendmentEvent(BaseModel):
     date: str | None = None
     official_identifier: str
