@@ -171,6 +171,8 @@ class CourtRulingSearchResult(BaseModel):
     query: str | None = None
     total_items: int
     hits: list[CourtRulingSearchHit]
+    law_citation: str | None = None
+    law_filter_suspicious: bool = False
     warning: str = (
         "Precedential weight differs by court and is reflected in each hit's authority_class "
         "(C1 Hæstiréttur > C2 Landsréttur > C3 héraðsdómur). Use get_court_ruling for full text. "
@@ -178,7 +180,11 @@ class CourtRulingSearchResult(BaseModel):
         "'Landsréttur' or a héraðsdómur name silently returns zero results even though those exact "
         "strings appear in the data (an upstream API limitation, verified against the live endpoint, "
         "not a bug in this filter's construction). For other courts, search by query/date and filter "
-        "the returned hits' court field client-side instead of relying on the court parameter."
+        "the returned hits' court field client-side instead of relying on the court parameter. "
+        "law_citation filters by a curated whole-law citation tag (not full-text search, so it is "
+        "sparse/incomplete, not exhaustive) — if law_filter_suspicious is true, total_items came back "
+        "large enough that the filter likely fell back to unfiltered rather than genuinely matching; "
+        "treat the results as unreliable in that case."
     )
 
 

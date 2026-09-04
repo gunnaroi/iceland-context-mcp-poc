@@ -195,6 +195,7 @@ async def search_court_rulings(
     court: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    law_citation: str | None = None,
     limit: int = 10,
 ) -> CourtRulingSearchResult:
     """Search Icelandic court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register.
@@ -204,8 +205,16 @@ async def search_court_rulings(
     appear in the data. For other courts, search by query/date and filter the returned hits' court field
     yourself. Each hit carries authority_class (C1 Hæstiréttur > C2 Landsréttur > C3 héraðsdómur) reflecting
     precedential weight, which differs sharply by court level. Use get_court_ruling for full text.
+
+    `law_citation` (format "NNN/YYYY", e.g. "91/1991") filters to rulings tagged as citing that whole law —
+    a real, curated citation tag verified against the live UI, but sparse (a few dozen to a few hundred hits
+    for even heavily-litigated laws), not a full-text citation index. Only whole-law granularity is supported
+    here; island.is's own UI marks article-level filtering as still in development, and it was confirmed
+    unreliable in testing — an unrecognized article-level tag silently falls back toward unfiltered results
+    rather than returning zero. If the returned law_filter_suspicious is true, total_items came back large
+    enough that this likely happened even at whole-law granularity — treat those results as unreliable.
     """
-    return await search_court_rulings_source(query, court, date_from, date_to, limit)
+    return await search_court_rulings_source(query, court, date_from, date_to, law_citation, limit)
 
 
 @mcp.tool()

@@ -463,14 +463,34 @@ query($input: WebVerdictByIdInput!) {
 """
 
 
+LAW_CITATION_RE = re.compile(r"^\s*(\d{1,4})\s*/\s*(\d{4})\s*$")
+
+# Above this, a laws-filtered result is presumptively a silent-fallback rather
+# than a real match set — verified live: an unrecognized article-level tag
+# (e.g. "2018.90.1") returns ~31,000 of the ~43,000-total corpus instead of a
+# real 0/near-0, while every whole-law query we tested stayed under a few
+# hundred. This is a heuristic tripwire, not a proven threshold.
+SUSPICIOUS_LAW_FILTER_TOTAL = 5000
+
+
+def _to_law_citation_tag(law_citation: str) -> str:
+    match = LAW_CITATION_RE.match(law_citation)
+    if not match:
+        raise ValueError(f"law_citation must look like 'NNN/YYYY' (e.g. '91/1991'), got {law_citation!r}.")
+    number, year = match.groups()
+    return f"{year}.{int(number)}"
+
+
 async def search_court_rulings(
     query: str | None = None,
     court: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    law_citation: str | None = None,
     limit: int = 10,
 ) -> CourtRulingSearchResult:
     limit = max(1, min(limit, 30))
+    laws = [_to_law_citation_tag(law_citation)] if law_citation else []
     variables = {
         "input": {
             "searchTerm": query,
@@ -480,6 +500,7 @@ async def search_court_rulings(
             "keywords": None,
             "caseContact": None,
             "caseNumber": None,
+            "laws": laws,
             "dateFrom": date_from,
             "dateTo": date_to,
             "page": 1,
@@ -487,6 +508,7 @@ async def search_court_rulings(
     }
     data = await _graphql(VERDICTS_SEARCH_QUERY, variables)
     result = data["webVerdicts"]
+    total = result["total"]
     hits = []
     for item in result["items"][:limit]:
         court_name = item.get("court") or ""
@@ -502,7 +524,14 @@ async def search_court_rulings(
                 authority_class=authority_class,
             )
         )
-    return CourtRulingSearchResult(query=query, total_items=result["total"], hits=hits)
+    suspicious = bool(law_citation) and total > SUSPICIOUS_LAW_FILTER_TOTAL
+    return CourtRulingSearchResult(
+        query=query,
+        total_items=total,
+        hits=hits,
+        law_citation=law_citation,
+        law_filter_suspicious=suspicious,
+    )
 
 
 async def fetch_court_ruling(ruling_id: str) -> CourtRulingResult:

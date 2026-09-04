@@ -4,6 +4,7 @@ from iceland_context_mcp.search import _fts_query
 from iceland_context_mcp.sources import (
     _extract_law_basis,
     _regulation_identifier,
+    _to_law_citation_tag,
     normalize_celex,
     registry_record,
 )
@@ -88,3 +89,18 @@ def test_open_data_registry():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_law_citation_tag_conversion():
+    assert _to_law_citation_tag("91/1991") == "1991.91"
+    assert _to_law_citation_tag("90/2018") == "2018.90"
+    assert _to_law_citation_tag(" 8 / 1962 ") == "1962.8"
+
+
+def test_law_citation_tag_rejects_bad_format():
+    for bad in ["90-2018", "2018/90", "nr. 90/2018", "90"]:
+        try:
+            _to_law_citation_tag(bad)
+            assert False, f"expected ValueError for {bad!r}"
+        except ValueError:
+            pass

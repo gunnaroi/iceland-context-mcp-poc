@@ -14,7 +14,7 @@ The first version exposes:
 - `get_regulation(number, year, view)` — official reglugerð register (current or as-originally-published text), with amendment history and a best-effort extraction of the regulation's stated legal basis (enabling law);
 - `search_regulations(query)` — free-text search over the regulation register;
 - `get_bill(malnr, thing, malsflokkur)` — Alþingi parliamentary matter (bill/resolution/question) with status, subject categories and its document trail (stjórnarfrumvarp/nefndarálit/breytingartillaga/...);
-- `search_court_rulings(query, court, date_from, date_to)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight;
+- `search_court_rulings(query, court, date_from, date_to, law_citation)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight; `law_citation` filters by a curated whole-law citation tag;
 - `get_iceland_eea_status(celex)` — public EES-gagnagrunnur retrieval;
 - `get_efta_eea_factsheet(celex)` — public EFTA EEA-Lex retrieval;
 - `trace_eea_public_context(celex)` — combines the two EEA evidence sources;
@@ -184,7 +184,18 @@ Remaining, roughly in order:
 1. Point-in-time Lagasafn text (`as_of` on `get_law`) by indexing the per-session archive instead of only the latest snapshot;
 2. Stjórnartíðindi A-deild retrieval/structured promulgation metadata;
 3. Samráðsgátt;
-4. No structured "which rulings cite law/regulation X" link exists yet, in either direction. A `laws` filter on the same `webVerdicts` GraphQL query looked promising but is confirmed unreliable when tested live: `laws=["90/2018"]` (a heavily-litigated law) returns 1 result, `laws=["91/1991"]` (civil procedure act, cited constantly) returns 3, while `laws=["nr. 90/2018"]` — a different string format — returns 31,044 out of 43,267 total, i.e. effectively unfiltered. Not a citation index; don't build on it. The realistic path is extending `_extract_law_basis`'s pattern (already used for `get_regulation`'s `law_basis`) to scan full ruling text for every `laga/reglugerðar nr. X/Y` mention, giving a self-mined, best-effort citation list per ruling — same evidence-not-authority discipline as everywhere else in this PoC, not a verified structured field;
+4. **Implemented**: `search_court_rulings(law_citation=...)` filters rulings by a whole-law citation tag (format
+   `"NNN/YYYY"`). My first attempt at this guessed wrong string formats for the underlying `webVerdicts`
+   `laws` field and got inconsistent results (1–3 hits for heavily-litigated laws, or a ~31k near-unfiltered
+   fallback) — driving the real island.is search UI in a browser and capturing its network requests revealed
+   the correct format is a dotted `"YYYY.NNN"` tag, which the frontend itself converts from natural
+   `"NNN/YYYY"` input. At that correct whole-law granularity, results are consistently plausible (e.g.
+   `"91/1991"` → 65 genuine hits, verified by reading the actual citation text). Article-level filtering
+   (e.g. `"1991.91.25.1"`) is explicitly marked "fleiri möguleikar eru í vinnslu" (more options in
+   development) on island.is's own UI and was confirmed unreliable — not exposed by this tool.
+   There is still no structured **regulation**→judgment link (only law→judgment via `law_citation`, and
+   regulation→law via `get_regulation`'s `law_basis`) — extending `_extract_law_basis`'s pattern to scan a
+   ruling's full text for every `laga/reglugerðar nr. X/Y` mention remains the open path for that gap;
 5. EUR-Lex/CELLAR as the EU machine source.
 
 Keep the MCP tool surface stable while swapping brittle HTML adapters for supported source contracts.
