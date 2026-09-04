@@ -1,0 +1,30 @@
+[project]
+name = "iceland-trusted-context-mcp"
+version = "0.1.0"
+description = "Public-only proof-of-concept MCP server for authoritative Icelandic legal and EEA context"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp[cli]>=2,<3",
+  "httpx>=0.27,<1",
+  "beautifulsoup4>=4.12,<5",
+  "lxml>=5,<7",
+  "pydantic>=2.7,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1"]
+
+[project.scripts]
+iceland-context-mcp = "iceland_context_mcp.server:main"
+iceland-context-bootstrap = "iceland_context_mcp.indexer:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/iceland_context_mcp"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

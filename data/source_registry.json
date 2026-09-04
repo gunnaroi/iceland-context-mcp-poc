@@ -1,0 +1,51 @@
+{
+  "althingi_lagasafn": {
+    "name": "Alþingi — Lagasafn",
+    "publisher": "Alþingi",
+    "authority_class": "A2",
+    "authority_label": "Official consolidated legislation",
+    "base_url": "https://www.althingi.is/lagasafn/",
+    "machine_source": "https://www.althingi.is/lagasafn/zip-skra-af-lagasafni/",
+    "notes": "Use the live official law page for verification. Bulk SGML snapshots are useful for discovery/indexing but can lag later amendments."
+  },
+  "althingi_open_xml": {
+    "name": "Alþingi — open parliamentary XML",
+    "publisher": "Alþingi",
+    "authority_class": "B",
+    "authority_label": "Official parliamentary material",
+    "base_url": "https://www.althingi.is/altext/xml/",
+    "notes": "Official open XML. Alþingi warns that most exports lack a formal schema, may change without notice, and normally update daily."
+  },
+  "ees_gagnagrunnur": {
+    "name": "EES-gagnagrunnur",
+    "publisher": "Stjórnarráð Íslands / Ministry for Foreign Affairs",
+    "authority_class": "B",
+    "authority_label": "Official Icelandic EEA workflow context",
+    "base_url": "https://gagnagrunnur.ees.is/",
+    "notes": "Tracks EEA acts and Icelandic handling. Do not equate an EU act or EEA relevance with domestic Icelandic applicability. The database states that Iceland-specific information before its 2017 introduction may be incomplete."
+  },
+  "efta_eea_lex": {
+    "name": "EFTA — EEA-Lex",
+    "publisher": "European Free Trade Association",
+    "authority_class": "B",
+    "authority_label": "Official EFTA EEA information",
+    "base_url": "https://www.efta.int/eea-lex/",
+    "notes": "Useful for EEA incorporation/JCD factsheets. EFTA states EEA-Lex is informational and does not replace applicable legal sources."
+  },
+  "eur_lex": {
+    "name": "EUR-Lex / CELLAR",
+    "publisher": "Publications Office of the European Union",
+    "authority_class": "A1-EU",
+    "authority_label": "Official EU legal source",
+    "base_url": "https://eur-lex.europa.eu/",
+    "notes": "An EU act appearing here must never, by that fact alone, be represented as applicable Icelandic law."
+  },
+  "stjornartidindi": {
+    "name": "Stjórnartíðindi",
+    "publisher": "Government of Iceland",
+    "authority_class": "A1",
+    "authority_label": "Official promulgation source",
+    "base_url": "https://island.is/stjornartidindi",
+    "notes": "PoC registry entry only; a structured adapter should be added once a reliable supported interface is confirmed."
+  }
+}
