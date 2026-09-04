@@ -24,20 +24,40 @@ from .open_data import (
     AirQualityResult,
     BondResult,
     EarthquakeResult,
+    EeaCatalogueSearchResult,
     EurostatSeriesResult,
+    FxRateResult,
     GeoDataResult,
+    InvoiceSearchResult,
+    NearbyCasesResult,
+    OrgSearchResult,
+    PlanningSearchResult,
+    RikisreikningurMalefniResult,
+    RikisreikningurSummary,
+    SdgIndicatorResult,
     StatTableResult,
+    TenderSearchResult,
     VehicleResult,
     WeatherObservationsResult,
     get_air_quality,
     get_bond,
     get_earthquakes,
     get_eurostat_series,
+    get_fx_rate,
     get_geodata,
     get_hagstofa_table,
+    get_nearby_planning_cases,
+    get_rikisreikningur_malefni,
+    get_rikisreikningur_summary,
+    get_sdg_indicator,
     get_vehicle,
     get_weather_observations,
     open_data_registry_records,
+    search_eea_datasets,
+    search_invoice_orgs,
+    search_invoices,
+    search_planning_minutes,
+    search_tenders,
 )
 from .search import search_laws as search_laws_index
 from .sources import (
@@ -359,6 +379,101 @@ async def get_bond_tool(orderbook_id: str) -> BondResult:
     trade and can be stale for thinly-traded bonds. Unrelated to this PoC's legal/EEA tools.
     """
     return await get_bond(orderbook_id)
+
+
+@mcp.tool()
+async def get_rikisreikningur_summary_tool() -> RikisreikningurSummary:
+    """Yearly Icelandic government-wide surplus/deficit and revenue/expense split (state accounts actuals).
+
+    Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_rikisreikningur_summary()
+
+
+@mcp.tool()
+async def get_rikisreikningur_malefni_tool() -> RikisreikningurMalefniResult:
+    """Icelandic state accounts actuals broken down by málefnasvið (policy area), year and revenue/expense type.
+
+    Returns the full ~620-row table — filter client-side on malefnasvid_numer for one policy area. This is
+    actuals (what was spent); for planned/enacted appropriations by the finer málaflokkur/viðfang level, use
+    get_bill_document on the relevant fjárlög þingskjal instead. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_rikisreikningur_malefni()
+
+
+@mcp.tool()
+async def search_government_invoices(
+    date_from: str, date_to: str, org_id: str | None = None, limit: int = 100
+) -> InvoiceSearchResult:
+    """Search paid Icelandic central-government invoices by date range (DD.MM.YYYY) and optional organisation id.
+
+    Excludes salaries, foreign-currency transactions, benefits, healthcare-provider payments, prisoner
+    payments, security operations, and municipality data. Use search_invoice_orgs to find an org_id by name
+    first. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await search_invoices(date_from, date_to, org_id, limit)
+
+
+@mcp.tool()
+async def search_invoice_orgs_tool(term: str) -> OrgSearchResult:
+    """Autocomplete an Icelandic government organisation name to its org_id, for use with search_government_invoices."""
+    return await search_invoice_orgs(term)
+
+
+@mcp.tool()
+async def search_planning_minutes_tool(query: str, limit: int = 20) -> PlanningSearchResult:
+    """Full-text search across Icelandic municipal planning/building-committee meeting minutes.
+
+    Covers Reykjavík, Hafnarfjörður and Árborg only (not all municipalities). Unrelated to this PoC's
+    legal/EEA tools.
+    """
+    return await search_planning_minutes(query, limit)
+
+
+@mcp.tool()
+async def get_nearby_planning_cases_tool(lat: float, lon: float, radius_m: int = 500, limit: int = 100) -> NearbyCasesResult:
+    """Find Icelandic planning/building cases near a coordinate (Reykjavík/Hafnarfjörður/Árborg only)."""
+    return await get_nearby_planning_cases(lat, lon, radius_m, limit)
+
+
+@mcp.tool()
+async def get_sdg_indicator_tool(code: str, lang: str = "is") -> SdgIndicatorResult:
+    """Fetch one Icelandic UN Sustainable Development Goal indicator's full time series by code (e.g. '1-1-1', '16-b-1').
+
+    lang is 'is' or 'en'. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_sdg_indicator(code, lang)
+
+
+@mcp.tool()
+async def search_tenders_tool(
+    query: str = "organisation-country-buyer=ISL", fields: list[str] | None = None, limit: int = 20, page: int = 1
+) -> TenderSearchResult:
+    """Search EU public procurement notices (TED) — defaults to Icelandic buyers. Query uses TED's own field syntax
+    (e.g. 'organisation-country-buyer=ISL AND classification-cpv=90610000').
+
+    Only covers EEA-threshold notices; a thin pass-through of TED's v3 response shape. Unrelated to this PoC's
+    legal/EEA tools.
+    """
+    return await search_tenders(query, fields, limit, page)
+
+
+@mcp.tool()
+async def search_eea_datasets_tool(query: str, limit: int = 10) -> EeaCatalogueSearchResult:
+    """Search the European Environment Agency's geospatial dataset catalogue (~10k datasets: CORINE, Copernicus
+    HRL, Natura 2000, etc.) by title keyword. Catalogue search only — does not fetch the underlying (often
+    large raster) data. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await search_eea_datasets(query, limit)
+
+
+@mcp.tool()
+async def get_fx_rate_tool(date: str = "latest", base: str = "EUR", symbols: str | None = None) -> FxRateResult:
+    """ECB daily reference exchange rates (interbank, not consumer card rates) for a date ('latest' or YYYY-MM-DD).
+
+    Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_fx_rate(date, base, symbols)
 
 
 def main() -> None:

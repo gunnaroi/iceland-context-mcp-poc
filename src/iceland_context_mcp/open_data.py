@@ -37,6 +37,7 @@ class OpenDataSourceRecord(BaseModel):
     publisher: str
     base_url: str
     notes: str
+    wfs_version: str = "1.0.0"
 
 
 def load_open_data_registry() -> dict[str, dict]:
@@ -106,10 +107,9 @@ async def get_geodata(
             raise ValueError(f"For source {source_key!r}, layer must be 'WORKSPACE:LayerName' (e.g. 'ERM:Landmask').")
         workspace = layer.split(":", 1)[0]
         base_url = base_url.replace("{workspace}", workspace)
-    version = "2.0.0" if source_key == "lmi" else "1.0.0"
     params = {
         "service": "WFS",
-        "version": version,
+        "version": source.wfs_version,
         "request": "GetFeature",
         "typeName": layer,
         "outputFormat": "application/json",
@@ -412,4 +412,307 @@ async def get_bond(orderbook_id: str) -> BondResult:
         latest_yield_fixing=latest,
         source_url=f"{LANAMAL_BASE}?orderbookId={orderbook_id}",
         retrieved_at=utc_now(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ríkisreikningur — state accounts actuals
+# ---------------------------------------------------------------------------
+
+RIKISREIKNINGUR_BASE = "https://rikisreikningurapi.azurewebsites.net"
+RIKISREIKNINGUR_API_KEY = "6d4d7394-2992-473d-9ea7-45946b39ad9d"
+
+
+class RikisreikningurSummary(BaseModel):
+    current_period: dict
+    afkoma_by_year: list[dict]
+    tekjur_gjold: list[dict]
+    source_url: str
+    retrieved_at: str
+    note: str = "Yearly government-wide surplus/deficit and revenue/expense split. See get_rikisreikningur_malefni for the per-policy-area breakdown."
+
+
+async def get_rikisreikningur_summary() -> RikisreikningurSummary:
+    headers = {"X-Api-Key": RIKISREIKNINGUR_API_KEY}
+    current = await _get_json(f"{RIKISREIKNINGUR_BASE}/api/FJS/NuverandiTimabil", headers=headers)
+    tg = await _get_json(f"{RIKISREIKNINGUR_BASE}/api/FJS/TekjurOgGjold", headers=headers)
+    return RikisreikningurSummary(
+        current_period=current,
+        afkoma_by_year=tg.get("afkoma", []),
+        tekjur_gjold=tg.get("tekjur_gjold", []),
+        source_url=f"{RIKISREIKNINGUR_BASE}/api/FJS/TekjurOgGjold",
+        retrieved_at=utc_now(),
+    )
+
+
+class RikisreikningurMalefniResult(BaseModel):
+    rows: list[dict]
+    truncated: bool
+    source_url: str
+    retrieved_at: str
+    note: str = (
+        "Revenue/expense by málefnasvið (policy area), year and type. Filter client-side on malefnasvid_numer "
+        "if you only need one policy area — the upstream endpoint returns the full ~620-row table."
+    )
+
+
+async def get_rikisreikningur_malefni() -> RikisreikningurMalefniResult:
+    headers = {"X-Api-Key": RIKISREIKNINGUR_API_KEY}
+    url = f"{RIKISREIKNINGUR_BASE}/api/FJS/Data/malefni_tg"
+    data = await _get_json(url, headers=headers)
+    # This endpoint double-encodes: a one-element list containing a JSON string.
+    inner = json.loads(data[0]) if isinstance(data, list) and data else {}
+    rows = inner.get("malefni_tg", [])
+    truncated = len(rows) > MAX_ROWS
+    return RikisreikningurMalefniResult(rows=rows[:MAX_ROWS], truncated=truncated, source_url=url, retrieved_at=utc_now())
+
+
+# ---------------------------------------------------------------------------
+# Opnir reikningar — government invoice data
+# ---------------------------------------------------------------------------
+
+OPNIRREIKNINGAR_BASE = "https://opnirreikningar.is"
+
+
+class InvoiceSearchResult(BaseModel):
+    invoices: list[dict]
+    truncated: bool
+    source_url: str
+    retrieved_at: str
+    note: str = "Excludes salaries, foreign-currency transactions, benefits, healthcare-provider payments, prisoner payments, security operations, and municipality data (central government only)."
+
+
+async def search_invoices(
+    date_from: str, date_to: str, org_id: str | None = None, limit: int = 100
+) -> InvoiceSearchResult:
+    limit = max(1, min(limit, MAX_ROWS))
+    params = {
+        "vendor_id": "",
+        "type_id": "",
+        "org_id": org_id or "",
+        "timabil_fra": date_from,
+        "timabil_til": date_to,
+        "draw": 1,
+        "columns[0][data]": "org_name",
+        "columns[1][data]": "check_date",
+        "columns[2][data]": "vendor_name",
+        "columns[3][data]": "invoice_amount",
+        "columns[4][data]": "check_amount",
+        "start": 0,
+        "length": limit,
+        "order[0][column]": 1,
+        "order[0][dir]": "desc",
+    }
+    headers = {"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"}
+    data = await _get_json(f"{OPNIRREIKNINGAR_BASE}/data_pagination_search", params=params, headers=headers)
+    invoices = data.get("data", [])
+    return InvoiceSearchResult(
+        invoices=invoices,
+        truncated=len(invoices) >= limit,
+        source_url=f"{OPNIRREIKNINGAR_BASE}/data_pagination_search",
+        retrieved_at=utc_now(),
+    )
+
+
+class OrgSearchResult(BaseModel):
+    matches: list[dict]
+    source_url: str
+    retrieved_at: str
+
+
+async def search_invoice_orgs(term: str) -> OrgSearchResult:
+    data = await _get_json(f"{OPNIRREIKNINGAR_BASE}/rest/org", params={"term": term})
+    return OrgSearchResult(
+        matches=data.get("data", []), source_url=f"{OPNIRREIKNINGAR_BASE}/rest/org", retrieved_at=utc_now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Skipulagsmál — Planitor planning/building permits
+# ---------------------------------------------------------------------------
+
+PLANITOR_BASE = "https://www.planitor.io/api"
+
+
+class PlanningSearchResult(BaseModel):
+    query: str
+    minutes: list[dict]
+    source_url: str
+    retrieved_at: str
+    note: str = "Covers Reykjavík, Hafnarfjörður and Árborg only. No structured permit-type field — classification is by free-text matching on the 'inquiry' field."
+
+
+async def search_planning_minutes(query: str, limit: int = 20) -> PlanningSearchResult:
+    limit = max(1, min(limit, 200))
+    data = await _get_json(f"{PLANITOR_BASE}/minutes/search", params={"q": query, "limit": limit})
+    return PlanningSearchResult(
+        query=query,
+        minutes=data.get("items", []),
+        source_url=f"{PLANITOR_BASE}/minutes/search",
+        retrieved_at=utc_now(),
+    )
+
+
+class NearbyCasesResult(BaseModel):
+    lat: float
+    lon: float
+    radius_m: int
+    cases: list[dict]
+    source_url: str
+    retrieved_at: str
+
+
+async def get_nearby_planning_cases(lat: float, lon: float, radius_m: int = 500, limit: int = 100) -> NearbyCasesResult:
+    radius_m = max(1, min(radius_m, 5000))
+    limit = max(1, min(limit, 500))
+    data = await _get_json(
+        f"{PLANITOR_BASE}/cases/nearby", params={"lat": lat, "lon": lon, "radius_m": radius_m, "limit": limit}
+    )
+    return NearbyCasesResult(
+        lat=lat,
+        lon=lon,
+        radius_m=radius_m,
+        cases=data.get("items", []),
+        source_url=f"{PLANITOR_BASE}/cases/nearby",
+        retrieved_at=utc_now(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Heimsmarkmiðin — Iceland's UN SDG indicators
+# ---------------------------------------------------------------------------
+
+HEIMSMARKMID_BASE = "https://hagstofan.github.io/heimsmarkmid-data-prod"
+
+
+class SdgIndicatorResult(BaseModel):
+    code: str
+    columns: list[str]
+    rows: list[list[str]]
+    truncated: bool
+    source_url: str
+    retrieved_at: str
+
+
+async def get_sdg_indicator(code: str, lang: str = "is") -> SdgIndicatorResult:
+    if lang not in ("is", "en"):
+        raise ValueError("lang must be 'is' or 'en'.")
+    url = f"{HEIMSMARKMID_BASE}/{lang}/data/{code}.csv"
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        text = resp.content.decode(resp.encoding or "utf-8")
+    reader = csv.reader(io.StringIO(text))
+    rows = [row for row in reader if row]
+    header, body = (rows[0], rows[1:]) if rows else ([], [])
+    truncated = len(body) > MAX_ROWS
+    return SdgIndicatorResult(
+        code=code, columns=header, rows=body[:MAX_ROWS], truncated=truncated, source_url=url, retrieved_at=utc_now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# TED — EU public procurement notices
+# ---------------------------------------------------------------------------
+
+TED_SEARCH_URL = "https://api.ted.europa.eu/v3/notices/search"
+
+
+class TenderSearchResult(BaseModel):
+    query: str
+    total_notice_count: int | None
+    notices: list[dict]
+    source_url: str = TED_SEARCH_URL
+    retrieved_at: str
+    note: str = (
+        "Only EEA-threshold notices are covered (~1,481 for Iceland historically) — this is a thin pass-through "
+        "of TED's own v3 response; which requested 'fields' actually populate can be inconsistent upstream."
+    )
+
+
+async def search_tenders(query: str, fields: list[str] | None = None, limit: int = 20, page: int = 1) -> TenderSearchResult:
+    limit = max(1, min(limit, 100))
+    default_fields = ["notice-title", "publication-date", "organisation-name-buyer", "tender-value", "tender-value-cur"]
+    payload = {"query": query, "fields": fields or default_fields, "limit": limit, "page": page}
+    data = await _post_json(TED_SEARCH_URL, payload)
+    return TenderSearchResult(
+        query=query,
+        total_notice_count=data.get("totalNoticeCount"),
+        notices=data.get("notices", []),
+        retrieved_at=utc_now(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# EEA SDI — European Environment Agency geospatial catalogue
+# ---------------------------------------------------------------------------
+
+EEA_SDI_SEARCH_URL = "https://sdi.eea.europa.eu/catalogue/srv/api/search/records/_search"
+
+
+class EeaCatalogueHit(BaseModel):
+    uuid: str
+    title: str | None = None
+    publication_year: str | None = None
+
+
+class EeaCatalogueSearchResult(BaseModel):
+    query: str
+    total: int
+    hits: list[EeaCatalogueHit]
+    source_url: str = EEA_SDI_SEARCH_URL
+    retrieved_at: str
+    note: str = "Catalogue search only — the underlying data is often a large raster on EEA's discomap ArcGIS server, or requires a free Copernicus Land account."
+
+
+async def search_eea_datasets(query: str, limit: int = 10) -> EeaCatalogueSearchResult:
+    limit = max(1, min(limit, 50))
+    payload = {
+        "query": {"bool": {"must": [{"match": {"resourceTitleObject.langeng": query}}]}},
+        "_source": ["uuid", "resourceTitleObject.default", "publicationYearForResource"],
+    }
+    timeout = httpx.Timeout(20.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT, "Accept": "application/json"}) as client:
+        resp = await client.post(f"{EEA_SDI_SEARCH_URL}?from=0&size={limit}", json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    hits_raw = data.get("hits", {}).get("hits", [])
+    hits = [
+        EeaCatalogueHit(
+            uuid=h["_source"].get("uuid", h.get("_id", "")),
+            title=h["_source"].get("resourceTitleObject", {}).get("default"),
+            publication_year=h["_source"].get("publicationYearForResource"),
+        )
+        for h in hits_raw
+    ]
+    return EeaCatalogueSearchResult(
+        query=query, total=data.get("hits", {}).get("total", {}).get("value", 0), hits=hits, retrieved_at=utc_now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Historical FX rates (frankfurter.dev — ECB reference rates)
+# ---------------------------------------------------------------------------
+
+FRANKFURTER_BASE = "https://api.frankfurter.dev/v1"
+
+
+class FxRateResult(BaseModel):
+    date: str
+    base: str
+    rates: dict[str, float]
+    source_url: str
+    retrieved_at: str
+    note: str = "ECB daily reference rates (interbank), not consumer card rates. ISK is not an ECB reference currency for the base side in practice — pass base='EUR' or another major currency and read ISK from rates if you need ISK cross rates."
+
+
+async def get_fx_rate(date: str = "latest", base: str = "EUR", symbols: str | None = None) -> FxRateResult:
+    params: dict = {"base": base}
+    if symbols:
+        params["symbols"] = symbols
+    url = f"{FRANKFURTER_BASE}/{date}"
+    data = await _get_json(url, params=params)
+    return FxRateResult(
+        date=data.get("date", date), base=data.get("base", base), rates=data.get("rates", {}), source_url=url, retrieved_at=utc_now()
     )

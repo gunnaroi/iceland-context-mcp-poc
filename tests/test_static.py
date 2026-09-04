@@ -104,3 +104,23 @@ def test_law_citation_tag_rejects_bad_format():
             assert False, f"expected ValueError for {bad!r}"
         except ValueError:
             pass
+
+
+def test_open_data_registry_new_sources():
+    records = open_data_registry_records()
+    keys = {r.key for r in records}
+    assert {
+        "rikisreikningur",
+        "opnirreikningar",
+        "skipulagsmal",
+        "heimsmarkmid",
+        "tenders",
+        "eea-sdi",
+        "natt",
+    } <= keys
+    natt = open_data_registry_record("natt")
+    assert natt.wfs_version == "2.0.0"
+    lmi = open_data_registry_record("lmi")
+    assert lmi.wfs_version == "2.0.0"
+    umferd = open_data_registry_record("umferd")
+    assert umferd.wfs_version == "1.0.0"

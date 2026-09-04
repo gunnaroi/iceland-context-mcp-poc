@@ -37,24 +37,32 @@ dashboard, no Playwright/JS rendering. Implemented so far (`context://iceland-da
 
 | Tool | Covers |
 |---|---|
-| `get_geodata(source_key, layer, ...)` | `umferd` (traffic counters), `fiskistofa` (fishing closures), `ust-gis` (contaminated land), `lmi` (national topographic/admin geodata) — one generic WFS client for all four |
+| `get_geodata(source_key, layer, ...)` | `umferd` (traffic counters), `fiskistofa` (fishing closures), `ust-gis` (contaminated land), `lmi` (national topographic/admin geodata), `natt` (Náttúrufræðistofnun vector layers) — one generic WFS client for all five |
 | `get_hagstofa_table(table_path, filters)` | `hagstofan` (any PX-Web table) and `income-distribution` (TEK01001 is just another table path) |
 | `get_vehicle(search)` | `car` — exact plate/VIN lookup |
 | `get_eurostat_series(dataset, filters)` | `eurostat` — EU/euro-area comparison series |
 | `get_weather_observations` / `get_earthquakes` | `vedur` |
 | `get_air_quality(date, station_local_id)` | `loftgaedi` |
 | `get_bond(orderbook_id)` | `lanamal` — RIKB/RIKS government bond yields |
+| `get_rikisreikningur_summary` / `get_rikisreikningur_malefni` | `rikisreikningur` — state accounts actuals, government-wide and by policy area |
+| `search_government_invoices` / `search_invoice_orgs` | `opnirreikningar` — paid central-government invoices |
+| `search_planning_minutes` / `get_nearby_planning_cases` | `skipulagsmal` — Planitor planning/building-permit data (Reykjavík/Hafnarfjörður/Árborg only) |
+| `get_sdg_indicator(code, lang)` | `heimsmarkmid` — Iceland's 137 UN SDG indicators |
+| `search_tenders` | `tenders` — TED EU procurement notices (EEA-threshold only; OCDS bulk history not covered) |
+| `search_eea_datasets` | `eea-sdi` — EEA geospatial dataset catalogue search (not the underlying data) |
+| `get_fx_rate(date, base, symbols)` | `gengi`'s historical side — ECB reference rates via frankfurter.dev |
 
 Like the reference resources, these carry no authority-class — this data isn't legal in nature. Unlike the
 reference resources, they're live retrieval, same as this PoC's own core tools.
 
 ### Remaining sources — tiered by feasibility, not yet built
 
-**Clean API, no scraping needed (next up):** `rikisreikningur` (Azure Functions API, public non-secret key),
-`opnirreikningar` (DataTables JSON), `skipulagsmal` (Planitor REST + OpenAPI spec), `heimsmarkmid` (open-sdg
-CSV/JSON on GitHub Pages), `tenders` (TED REST API; OCDS bulk download is CC BY-NC-SA — note the license before
-redistributing), `eea-sdi`/`lmi-hrl`/`natt` (GeoServer WFS/WCS, same pattern as `get_geodata`), `gengi`'s
-historical rates (frankfurter.dev).
+**Not pursued, wrong shape for this tool surface:** `lmi-hrl` and most of `natt` (the national habitat map in
+particular) are large-raster WCS/GeoTIFF coverages — hundreds of MB to multi-GB pixel data, not something an
+LLM-facing tool should hand back. `natt`'s GeoServer does expose genuine vector WFS layers though (federated
+from LMI/Hagstofa/others), so it's covered by `get_geodata` for those. `gengi`'s *current* Borgun card-rate
+side was left out too — the skill doc names no concrete endpoint for it, only prose; the ECB historical side
+via frankfurter.dev is what's implemented.
 
 `fjarlog` (the skill's own CSV mirror on stjornarradid.is) turned out not to be worth pursuing: that site is
 Blazor Server-rendered (the download link isn't in the plain HTML, and the filename carries a changing version
