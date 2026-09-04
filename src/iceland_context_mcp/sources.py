@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 
 from .models import (
     BillDocument,
+    BillDocumentResult,
     BillResult,
     CourtRulingResult,
     CourtRulingSearchHit,
@@ -87,7 +88,7 @@ def _extract_fields(soup: BeautifulSoup) -> list[EeaField]:
     return fields[:150]
 
 
-async def _get(url: str) -> httpx.Response:
+async def _get(url: str, max_bytes: int = 5_000_000) -> httpx.Response:
     timeout = httpx.Timeout(20.0, connect=10.0)
     async with httpx.AsyncClient(
         timeout=timeout,
@@ -96,9 +97,14 @@ async def _get(url: str) -> httpx.Response:
     ) as client:
         response = await client.get(url)
         response.raise_for_status()
-        if len(response.content) > 5_000_000:
-            raise ValueError("Source response exceeded PoC safety limit (5 MB).")
+        if len(response.content) > max_bytes:
+            raise ValueError(f"Source response exceeded PoC safety limit ({max_bytes // 1_000_000} MB).")
         return response
+
+
+# Legislative PDFs (fylgirit, large frumvörp) run well past the default 5 MB
+# text/HTML cap — seen up to ~7.7 MB for a single fjárlög document.
+PDF_MAX_BYTES = 25_000_000
 
 
 def normalize_celex(celex: str) -> str:
@@ -398,6 +404,53 @@ async def fetch_bill(malnr: int, thing: int | None = None, malsflokkur: str = "A
     )
 
 
+# Alþingi's own "no inline text, see the PDF" marker on þingskjal HTML pages
+# (verified live against a fjárlög document, which is PDF-only).
+NO_INLINE_TEXT_MARKER = "til að skoða skjalið"
+MIN_INLINE_TEXT_CHARS = 200
+
+
+async def fetch_bill_document(thing: int, document_number: int) -> BillDocumentResult:
+    html_url = f"https://www.althingi.is/altext/{thing}/s/{document_number:04d}.html"
+    pdf_url = f"https://www.althingi.is/altext/pdf/{thing}/s/{document_number:04d}.pdf"
+    response = await _get(html_url)
+    soup = BeautifulSoup(response.text, "lxml")
+    body = soup.find("body") or soup
+    for tag in body(["script", "style", "nav"]):
+        tag.decompose()
+    plain = re.sub(r"\s+", " ", body.get_text(" ")).strip()
+
+    # The page is a metadata/navigation shell (title, document list, breadcrumbs) even
+    # when there's no inline text, so a marker check is more reliable than a raw length
+    # cutoff alone, but both are used since the marker phrasing isn't guaranteed stable.
+    has_inline_text = NO_INLINE_TEXT_MARKER.lower() not in plain.lower() and len(plain) > 2000
+
+    if has_inline_text:
+        text = _clean_text(soup)
+        text_source = "html"
+    else:
+        pdf_response = await _get(pdf_url, max_bytes=PDF_MAX_BYTES)
+        text = _pdf_bytes_to_text(pdf_response.content, MAX_TEXT_CHARS)
+        text_source = "pdf"
+
+    source = registry_record("althingi_open_xml")
+    return BillDocumentResult(
+        thing=thing,
+        document_number=document_number,
+        text=text,
+        text_source=text_source,
+        html_url=html_url,
+        pdf_url=pdf_url,
+        provenance=Provenance(
+            publisher=source.publisher,
+            source_url=html_url if text_source == "html" else pdf_url,
+            retrieved_at=utc_now(),
+            authority_class=source.authority_class,
+            authority_label=source.authority_label,
+        ),
+    )
+
+
 def _court_authority(court: str) -> tuple[str, str]:
     normalized = court.strip().lower()
     if "hæstiréttur" in normalized:
@@ -431,8 +484,7 @@ def _richtext_to_plain(node: dict) -> str:
     return joined
 
 
-def _pdf_base64_to_text(b64_data: str, max_chars: int) -> str:
-    raw = base64.b64decode(b64_data)
+def _pdf_bytes_to_text(raw: bytes, max_chars: int) -> str:
     parts: list[str] = []
     total = 0
     with pdfplumber.open(io.BytesIO(raw)) as pdf:
@@ -443,6 +495,10 @@ def _pdf_base64_to_text(b64_data: str, max_chars: int) -> str:
             if total >= max_chars:
                 break
     return "\n\n".join(parts)[:max_chars]
+
+
+def _pdf_base64_to_text(b64_data: str, max_chars: int) -> str:
+    return _pdf_bytes_to_text(base64.b64decode(b64_data), max_chars)
 
 
 VERDICTS_SEARCH_QUERY = """

@@ -14,7 +14,7 @@
     "authority_class": "B",
     "authority_label": "Official parliamentary material",
     "base_url": "https://www.althingi.is/altext/xml/",
-    "notes": "Official open XML: bills/matters, committee stages, speeches, votes. Alþingi warns that most exports lack a formal schema, may change without notice, and normally update daily. Requires a non-default User-Agent (default httpx UA gets 403'd) and mixed D.M.YYYY/ISO date formats depending on endpoint; parse responses as bytes, not decoded text."
+    "notes": "Official open XML: bills/matters, committee stages, speeches, votes. Alþingi warns that most exports lack a formal schema, may change without notice, and normally update daily. Requires a non-default User-Agent (default httpx UA gets 403'd) and mixed D.M.YYYY/ISO date formats depending on endpoint; parse responses as bytes, not decoded text. get_bill_document fetches one þingskjal's full text (html_url, falling back to pdf_url when the page has no inline text — verified for fjárlög, which is PDF-only). Fjárlög is itself legislation: its enacted-law PDF (not a ministry CSV mirror) is the canonical source for exact appropriation figures by málefnasvið/málaflokkur, confirmed by extracting real figures from it live. Large legislative PDFs can run past 5MB (7.7MB seen) — get_bill_document uses a 25MB cap, not the 5MB default."
   },
   "domar_island_is": {
     "name": "Dómar — island.is (unified court verdict register)",

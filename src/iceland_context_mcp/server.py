@@ -6,6 +6,7 @@ import os
 from mcp.server import MCPServer
 
 from .models import (
+    BillDocumentResult,
     BillResult,
     CourtRulingResult,
     CourtRulingSearchResult,
@@ -41,6 +42,7 @@ from .open_data import (
 from .search import search_laws as search_laws_index
 from .sources import (
     fetch_bill,
+    fetch_bill_document,
     fetch_court_ruling,
     fetch_ees,
     fetch_efta,
@@ -187,6 +189,21 @@ async def get_bill(malnr: int, thing: int | None = None, malsflokkur: str = "A")
     public travaux préparatoires evidence for legislative intent, not binding legal text.
     """
     return await fetch_bill(malnr, thing, malsflokkur)
+
+
+@mcp.tool()
+async def get_bill_document(thing: int, document_number: int) -> BillDocumentResult:
+    """Retrieve the full text of one Alþingi þingskjal (a document_number from a BillResult's documents list).
+
+    Most documents (nefndarálit, breytingartillaga, smaller frumvörp) render inline HTML and come back with
+    text_source='html'. Large tabular documents — fjárlög (the state budget) in particular — publish no inline
+    text and this falls back to the document's own PDF (text_source='pdf'). Fjárlög's own enacted-law PDF
+    contains the appropriation tables by málefnasvið/málaflokkur (e.g. "Menning, listir, íþrótta- og
+    æskulýðsmál") — that PDF, not the CSV mirror on a ministry website, is the canonical source for exact
+    budget figures, since fjárlög is itself legislation. PDF extraction on table-heavy pages can come out
+    garbled — a known limitation of the extraction library on some table layouts, not a data error.
+    """
+    return await fetch_bill_document(thing, document_number)
 
 
 @mcp.tool()

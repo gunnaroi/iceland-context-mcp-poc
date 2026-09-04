@@ -225,3 +225,21 @@ class BillResult(BaseModel):
         "usually 'stjórnarfrumvarp' or 'þingmannafrumvarp') is the closest public travaux préparatoires evidence "
         "for legislative intent — it is not binding legal text, and only 'status' shows whether the matter became law."
     )
+
+
+class BillDocumentResult(BaseModel):
+    thing: int
+    document_number: int
+    text: str
+    text_source: str
+    html_url: str
+    pdf_url: str
+    provenance: Provenance
+    status_note: str = (
+        "Full text of one Alþingi þingskjal (document_number, from a BillResult's documents list). Most "
+        "documents (nefndarálit, breytingartillaga, smaller frumvörp) render inline HTML and text_source is "
+        "'html'; large tabular documents — fjárlög (the state budget) in particular — publish no inline text "
+        "('Smellið á PDF...') and this falls back to the document's own PDF, text_source='pdf'. PDF extraction "
+        "on table-heavy pages (e.g. fjárlög's appropriation tables) can come out garbled or column-scrambled — "
+        "a known pdfplumber limitation with some table layouts, not a data error; treat such pages with care."
+    )

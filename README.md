@@ -14,6 +14,7 @@ The first version exposes:
 - `get_regulation(number, year, view)` — official reglugerð register (current or as-originally-published text), with amendment history and a best-effort extraction of the regulation's stated legal basis (enabling law);
 - `search_regulations(query)` — free-text search over the regulation register;
 - `get_bill(malnr, thing, malsflokkur)` — Alþingi parliamentary matter (bill/resolution/question) with status, subject categories and its document trail (stjórnarfrumvarp/nefndarálit/breytingartillaga/...);
+- `get_bill_document(thing, document_number)` — full text of one þingskjal from that trail (HTML normally, falling back to the document's own PDF when there's no inline text — e.g. fjárlög, the state budget, which is itself legislation and PDF-only; its enacted-law PDF is the canonical source for exact appropriation figures, not a ministry CSV mirror);
 - `search_court_rulings(query, court, date_from, date_to, law_citation)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight; `law_citation` filters by a curated whole-law citation tag;
 - `get_iceland_eea_status(celex)` — public EES-gagnagrunnur retrieval;
 - `get_efta_eea_factsheet(celex)` — public EFTA EEA-Lex retrieval;
@@ -52,9 +53,15 @@ reference resources, they're live retrieval, same as this PoC's own core tools.
 **Clean API, no scraping needed (next up):** `rikisreikningur` (Azure Functions API, public non-secret key),
 `opnirreikningar` (DataTables JSON), `skipulagsmal` (Planitor REST + OpenAPI spec), `heimsmarkmid` (open-sdg
 CSV/JSON on GitHub Pages), `tenders` (TED REST API; OCDS bulk download is CC BY-NC-SA — note the license before
-redistributing), `eea-sdi`/`lmi-hrl`/`natt` (GeoServer WFS/WCS, same pattern as `get_geodata`), `fjarlog` and
-`gengi`'s historical rates (frankfurter.dev) — small HTML link-discovery only, same pattern already used by
-`indexer.py` for the Lagasafn ZIP.
+redistributing), `eea-sdi`/`lmi-hrl`/`natt` (GeoServer WFS/WCS, same pattern as `get_geodata`), `gengi`'s
+historical rates (frankfurter.dev).
+
+`fjarlog` (the skill's own CSV mirror on stjornarradid.is) turned out not to be worth pursuing: that site is
+Blazor Server-rendered (the download link isn't in the plain HTML, and the filename carries a changing version
+suffix with no discoverable stable alias — confirmed live, all attempted paths either need a JS-rendered
+session or 302 ambiguously). Since fjárlög is itself legislation, `get_bill_document` reading its enacted-law
+PDF directly off althingi.is is the better source anyway — verified live, extracting real appropriation
+figures by málaflokkur (e.g. "Menning, listir, íþrótta- og æskulýðsmál" → 3.445,4 m.kr. in the 2026 budget).
 
 **PDF-based, not attempted yet (own tier — fetching+parsing a public PDF isn't scraping, but locating some of
 these PDFs may need it):** `financials`, `skatturinn`, `nasdaq`, `insurance`, `annual-report-cache`.
