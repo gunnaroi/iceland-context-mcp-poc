@@ -184,7 +184,7 @@ Remaining, roughly in order:
 1. Point-in-time Lagasafn text (`as_of` on `get_law`) by indexing the per-session archive instead of only the latest snapshot;
 2. Stjórnartíðindi A-deild retrieval/structured promulgation metadata;
 3. Samráðsgátt;
-4. A `laws` filter is exposed by the same `webVerdicts` GraphQL query used by `search_court_rulings` — not yet wired up as a tool parameter, and would give a citation-graph-style "rulings citing law X" lookup similar to what Urðarbrunnur's `trace_citations` benchmark showed is valuable, sourced directly from island.is instead;
+4. No structured "which rulings cite law/regulation X" link exists yet, in either direction. A `laws` filter on the same `webVerdicts` GraphQL query looked promising but is confirmed unreliable when tested live: `laws=["90/2018"]` (a heavily-litigated law) returns 1 result, `laws=["91/1991"]` (civil procedure act, cited constantly) returns 3, while `laws=["nr. 90/2018"]` — a different string format — returns 31,044 out of 43,267 total, i.e. effectively unfiltered. Not a citation index; don't build on it. The realistic path is extending `_extract_law_basis`'s pattern (already used for `get_regulation`'s `law_basis`) to scan full ruling text for every `laga/reglugerðar nr. X/Y` mention, giving a self-mined, best-effort citation list per ruling — same evidence-not-authority discipline as everywhere else in this PoC, not a verified structured field;
 5. EUR-Lex/CELLAR as the EU machine source.
 
 Keep the MCP tool surface stable while swapping brittle HTML adapters for supported source contracts.
