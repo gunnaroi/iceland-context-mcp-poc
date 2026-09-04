@@ -22,6 +22,18 @@ The first version exposes:
 
 No protected island.is/X-Road data, authenticated portals, write tools, or internal documents are used.
 
+## Reference resources beyond this PoC's own scope
+
+`context://iceland-data/index` and `context://iceland-data/skill/{name}` expose all 56 `SKILL.md` docs from
+[jokull/icelandic-data](https://github.com/jokull/icelandic-data) (MIT-licensed, vendored with attribution —
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), covering public Icelandic data sources well beyond
+this PoC's stated legal/EEA scope: national statistics, government dashboards, business filings, property
+records, transport, environment, personal finance, and more. This is a deliberate scope decision, not scope
+creep by accident — these are **reference documentation only**: unlike every tool above, they are not
+retrieved live, carry no provenance or authority-class metadata, and this project makes no claim about
+their accuracy or upstream currency. Two of them (`althingi`, `domstolar`) directly informed how `get_bill`
+and `search_court_rulings`/`get_court_ruling` were built; the other 54 are included for completeness.
+
 ## Why this is a good first PoC
 
 It demonstrates the hard part of the idea with publicly observable material:

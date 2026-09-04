@@ -18,6 +18,7 @@ from .models import (
     SourceRecord,
     SourceRegistryResult,
 )
+from .data_skills import attribution_header, get_data_skill, list_data_skills
 from .search import search_laws as search_laws_index
 from .sources import (
     fetch_bill,
@@ -57,6 +58,10 @@ Mandatory interpretation rules:
     its appellate role, and héraðsdómur (C3) rulings bind only the parties to that case. A ruling shows how
     a law was applied in one case; it is not itself the law, and a single lower-court ruling should not be
     presented with the same weight as settled Hæstiréttur precedent.
+11. The context://iceland-data/* resources are reference documentation about OTHER public Icelandic data
+    domains (statistics, dashboards, business filings, etc.), vendored from a third-party project. They are
+    not retrieved live, carry no provenance/authority-class, and are unrelated to this server's own
+    legal/EEA tools — do not treat their content with the same trust level as a tool result above.
 """.strip()
 
 mcp = MCPServer(
@@ -81,6 +86,25 @@ def source_registry_resource() -> str:
     for src in registry_records():
         lines.append(f"{src.key}: {src.name} — {src.authority_label} — {src.base_url}\n{src.notes}")
     return "\n\n".join(lines)
+
+
+@mcp.resource("context://iceland-data/index")
+def data_skills_index() -> str:
+    """Index of vendored jokull/icelandic-data skill docs — public Icelandic data sources beyond this PoC's own legal/EEA tools."""
+    header = (
+        "Reference documentation for public Icelandic data sources, vendored (MIT-licensed, with attribution) "
+        "from jokull/icelandic-data — not part of this PoC's own tool surface, not retrieved live, and not "
+        "carrying provenance/authority-class metadata. Read context://iceland-data/skill/{name} for one entry.\n"
+    )
+    lines = [f"{s.name}: {s.description}" for s in list_data_skills()]
+    return header + "\n" + "\n".join(lines)
+
+
+@mcp.resource("context://iceland-data/skill/{name}")
+def data_skill_resource(name: str) -> str:
+    """One vendored jokull/icelandic-data skill doc by name (see context://iceland-data/index for the list)."""
+    skill = get_data_skill(name)
+    return attribution_header(skill.name) + skill.body
 
 
 @mcp.tool()

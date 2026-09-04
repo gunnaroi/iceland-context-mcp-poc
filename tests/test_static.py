@@ -1,3 +1,4 @@
+from iceland_context_mcp.data_skills import attribution_header, get_data_skill, list_data_skills
 from iceland_context_mcp.search import _fts_query
 from iceland_context_mcp.sources import (
     _extract_law_basis,
@@ -46,3 +47,30 @@ def test_law_basis_extraction_law_name_between():
 
 def test_law_basis_extraction_no_match():
     assert _extract_law_basis("<p>Reglugerð þessi öðlast þegar gildi.</p>") == []
+
+
+def test_data_skills_index_nonempty_and_has_frontmatter():
+    skills = list_data_skills()
+    assert len(skills) >= 50
+    names = {s.name for s in skills}
+    assert "althingi" in names
+    assert "domstolar" in names
+    for s in skills:
+        assert s.description, f"{s.name} is missing a description"
+
+
+def test_data_skill_lookup_and_unknown():
+    skill = get_data_skill("althingi")
+    assert skill.name == "althingi"
+    assert "althingi.is" in skill.body
+    try:
+        get_data_skill("does-not-exist")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_attribution_header_names_source():
+    header = attribution_header("althingi")
+    assert "jokull/icelandic-data" in header
+    assert "MIT" in header
