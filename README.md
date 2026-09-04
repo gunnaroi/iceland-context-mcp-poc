@@ -1,6 +1,6 @@
-# Iceland Trusted Context MCP — public-only proof of concept
+# Iceland Context MCP — public-only sources proof of concept
 
-This is a deliberately narrow MCP proof of concept for giving AI systems **public Icelandic legal and EEA context without any internal government access**.
+This is a deliberately narrow MCP proof of concept for giving AI systems **public Icelandic legal and EEA context**.
 
 It implements the principle that the MCP server is a **read-only routing/retrieval layer, not the system of record**. Every live retrieval carries publisher/source provenance and explicit legal-status warnings.
 
