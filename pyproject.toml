@@ -3,6 +3,9 @@ name = "iceland-trusted-context-mcp"
 version = "0.1.0"
 description = "Public-only proof-of-concept MCP server for authoritative Icelandic legal and EEA context"
 readme = "README.md"
+license = "CC-BY-4.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Gunnar Örn Indriðason" }]
 requires-python = ">=3.10"
 dependencies = [
   "mcp[cli]>=2,<3",

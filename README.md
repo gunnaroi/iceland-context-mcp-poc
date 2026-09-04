@@ -297,3 +297,14 @@ Keep the MCP tool surface stable while swapping brittle HTML adapters for suppor
 - `search_court_rulings`: the `court` filter is confirmed reliable only for `"Hæstiréttur"` — `"Landsréttur"` or a héraðsdómur name silently returns zero results even though those exact strings appear in the returned data. Filter by court client-side for anything but Hæstiréttur.
 - `get_court_ruling`: full text is structured `richText` for some rulings (mainly recent Hæstiréttur) and a PDF (extracted via `pdfplumber`) for others — check `text_source` on the result.
 - `search_stjornartidindi`: the upstream GraphQL resolver returns a 500 error if `dateFrom`/`dateTo` are sent as explicit `null` rather than omitted — this tool omits the keys entirely when unset.
+
+## License
+
+Original content in this repository (source code, documentation, configuration) is licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE). Creative Commons itself
+recommends against CC licenses for software (no patent grant, no software-specific distribution terms); it's
+applied here as a deliberate choice for this proof of concept regardless.
+
+The files under `src/iceland_context_mcp/skills/` are vendored verbatim from
+[jokull/icelandic-data](https://github.com/jokull/icelandic-data) and remain under their own **MIT** license,
+unaffected by the CC BY 4.0 terms above — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
