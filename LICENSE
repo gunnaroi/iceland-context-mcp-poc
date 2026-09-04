@@ -1,29 +1,3 @@
-Iceland Trusted Context MCP — public-only proof of concept
-Copyright (c) 2026 Gunnar Örn Indriðason
-
-This work (all original content in this repository — source code, documentation,
-and configuration — except the vendored third-party material listed below) is
-licensed under the Creative Commons Attribution 4.0 International License (CC BY
-4.0). To view a copy of this license, visit
-https://creativecommons.org/licenses/by/4.0/ or see the full legal code below.
-
-Attribution: when reusing this work, credit "Gunnar Örn Indriðason,
-iceland-trusted-context-mcp-poc" and link back to
-https://github.com/gunnaroi/iceland-trusted-context-mcp-poc.
-
-Note: Creative Commons licenses are not designed for software and explicitly
-recommend against their use for code (no patent grant, no software-specific
-distribution terms) — see https://creativecommons.org/faq/#can-i-apply-a-creative-commons-license-to-software.
-This license is applied here as a deliberate choice for this proof-of-concept
-regardless.
-
-Exception — third-party material: the files under src/iceland_context_mcp/skills/
-are vendored verbatim from jokull/icelandic-data and remain under their own MIT
-license, unaffected by the CC BY 4.0 terms below. See THIRD_PARTY_NOTICES.md for
-the full MIT license text and attribution.
-
-=======================================================================
-
 Attribution 4.0 International
 
 =======================================================================

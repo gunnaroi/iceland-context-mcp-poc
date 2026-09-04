@@ -300,10 +300,16 @@ Keep the MCP tool surface stable while swapping brittle HTML adapters for suppor
 
 ## License
 
-Original content in this repository (source code, documentation, configuration) is licensed under
-[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE). Creative Commons itself
-recommends against CC licenses for software (no patent grant, no software-specific distribution terms); it's
-applied here as a deliberate choice for this proof of concept regardless.
+Copyright (c) 2026 Gunnar Örn Indriðason. Original content in this repository (source code, documentation,
+configuration — everything except the vendored third-party material below) is licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) — see [LICENSE](LICENSE) for the full legal code.
+When reusing this work, credit "Gunnar Örn Indriðason, iceland-context-mcp-poc" and link back to
+[github.com/gunnaroi/iceland-context-mcp-poc](https://github.com/gunnaroi/iceland-context-mcp-poc).
+
+Creative Commons itself [recommends against using CC licenses for
+software](https://creativecommons.org/faq/#can-i-apply-a-creative-commons-license-to-software) (no patent
+grant, no software-specific distribution terms) — CC BY 4.0 is applied here as a deliberate choice for this
+proof of concept regardless.
 
 The files under `src/iceland_context_mcp/skills/` are vendored verbatim from
 [jokull/icelandic-data](https://github.com/jokull/icelandic-data) and remain under their own **MIT** license,
