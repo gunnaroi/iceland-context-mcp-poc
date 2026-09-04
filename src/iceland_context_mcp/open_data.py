@@ -420,6 +420,15 @@ async def get_bond(orderbook_id: str) -> BondResult:
 # ---------------------------------------------------------------------------
 
 RIKISREIKNINGUR_BASE = "https://rikisreikningurapi.azurewebsites.net"
+# NOT A SECRET despite the header name: this is a static anonymous-throttling
+# key, not an access credential. It ships in rikisreikningur.is's own public,
+# unauthenticated JS bundle and is sent to every visitor of that site with no
+# login — verified directly (not just taken on faith) by fetching that bundle
+# and finding this exact string in it: curl -s https://www.rikisreikningur.is/
+# | grep -o 'main[^"]*\.js', then curl that chunk and grep for the key.
+# Hardcoding it here is correct; treating it as a secret would only break this
+# tool for no security benefit, since it's already public to anyone who opens
+# their browser's devtools on that site.
 RIKISREIKNINGUR_API_KEY = "6d4d7394-2992-473d-9ea7-45946b39ad9d"
 
 
