@@ -16,6 +16,7 @@ The first version exposes:
 - `get_bill(malnr, thing, malsflokkur)` — Alþingi parliamentary matter (bill/resolution/question) with status, subject categories and its document trail (stjórnarfrumvarp/nefndarálit/breytingartillaga/...);
 - `get_bill_document(thing, document_number)` — full text of one þingskjal from that trail (HTML normally, falling back to the document's own PDF when there's no inline text — e.g. fjárlög, the state budget, which is itself legislation and PDF-only; its enacted-law PDF is the canonical source for exact appropriation figures, not a ministry CSV mirror);
 - `search_court_rulings(query, court, date_from, date_to, law_citation)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight; `law_citation` filters by a curated whole-law citation tag;
+- `search_stjornartidindi(query, department, date_from, date_to)` / `get_stjornartidindi_advert(id)` — Stjórnartíðindi (the official promulgation record), via the same island.is GraphQL backend as the court/regulation tools;
 - `get_eur_lex_act(celex, language)` — official EU act text and metadata via the public CELLAR SPARQL + REST endpoints (no API key) — the EU-law side of the chain;
 - `get_iceland_eea_status(celex)` — public EES-gagnagrunnur retrieval;
 - `get_efta_eea_factsheet(celex)` — public EFTA EEA-Lex retrieval;
@@ -193,14 +194,14 @@ Try a CELEX number such as `32016R0679`. The model should use the Icelandic EES 
 
 ## Suggested next increment
 
-Implemented so far: Alþingi open parliamentary XML (`get_bill`), the reglugerð register with law-basis extraction
-(`get_regulation`, `search_regulations`), and unified court rulings (`search_court_rulings`, `get_court_ruling`).
-Remaining, roughly in order:
+Implemented so far: Alþingi open parliamentary XML (`get_bill`, `get_bill_document`), the reglugerð register
+with law-basis extraction (`get_regulation`, `search_regulations`), unified court rulings
+(`search_court_rulings`, `get_court_ruling`), EUR-Lex/CELLAR (`get_eur_lex_act`), and Stjórnartíðindi
+(`search_stjornartidindi`, `get_stjornartidindi_advert`). Remaining, roughly in order:
 
 1. Point-in-time Lagasafn text (`as_of` on `get_law`) by indexing the per-session archive instead of only the latest snapshot;
-2. Stjórnartíðindi A-deild retrieval/structured promulgation metadata;
-3. Samráðsgátt;
-4. **Implemented**: `search_court_rulings(law_citation=...)` filters rulings by a whole-law citation tag (format
+2. Samráðsgátt;
+3. **Implemented**: `search_court_rulings(law_citation=...)` filters rulings by a whole-law citation tag (format
    `"NNN/YYYY"`). My first attempt at this guessed wrong string formats for the underlying `webVerdicts`
    `laws` field and got inconsistent results (1–3 hits for heavily-litigated laws, or a ~31k near-unfiltered
    fallback) — driving the real island.is search UI in a browser and capturing its network requests revealed
@@ -212,7 +213,7 @@ Remaining, roughly in order:
    There is still no structured **regulation**→judgment link (only law→judgment via `law_citation`, and
    regulation→law via `get_regulation`'s `law_basis`) — extending `_extract_law_basis`'s pattern to scan a
    ruling's full text for every `laga/reglugerðar nr. X/Y` mention remains the open path for that gap;
-5. **Implemented**: `get_eur_lex_act(celex, language)` retrieves official EU act text and metadata directly
+4. **Implemented**: `get_eur_lex_act(celex, language)` retrieves official EU act text and metadata directly
    from CELLAR (metadata via its public SPARQL endpoint using the CDM ontology, text via its
    content-negotiated REST endpoint) — the same backend eur-lex.europa.eu itself runs on, no API key. Modeled
    on the query patterns from two actively-maintained open-source EUR-Lex MCP servers
@@ -225,6 +226,14 @@ Remaining, roughly in order:
    metadata-only representation instead of the actual act text, no error at all (first attempt returned 742
    characters of EuroVoc keywords for a regulation whose real text is 372K+ characters; caught by checking the
    output looked implausibly short, not by any error signal).
+5. **Implemented**: `search_stjornartidindi`/`get_stjornartidindi_advert` retrieve the official promulgation
+   record via island.is's GraphQL backend (`officialJournalOfIcelandAdverts`/`officialJournalOfIcelandAdvert`
+   — the correct singular field name and its nested `advert` field were both found by probing GraphQL's own
+   "did you mean" validation errors, the same technique used for `search_court_rulings` earlier). Fixed a
+   real bug in `_clean_text` — shared by every text-producing tool in this codebase — found while verifying
+   this one live: some legacy adverts' own source HTML has literal newlines between every word inside a
+   single text node, which `get_text()` preserved as one word per output line regardless of separator choice.
+   Re-verified `get_law`/`get_regulation`/`get_bill_document`/court rulings afterward to confirm no regression.
 
 Keep the MCP tool surface stable while swapping brittle HTML adapters for supported source contracts.
 
@@ -233,3 +242,4 @@ Keep the MCP tool surface stable while swapping brittle HTML adapters for suppor
 - `search_regulations`: the reglugerð API's `perPage` parameter is silently ignored server-side (always returns a fixed page size); `limit` is enforced client-side instead.
 - `search_court_rulings`: the `court` filter is confirmed reliable only for `"Hæstiréttur"` — `"Landsréttur"` or a héraðsdómur name silently returns zero results even though those exact strings appear in the returned data. Filter by court client-side for anything but Hæstiréttur.
 - `get_court_ruling`: full text is structured `richText` for some rulings (mainly recent Hæstiréttur) and a PDF (extracted via `pdfplumber`) for others — check `text_source` on the result.
+- `search_stjornartidindi`: the upstream GraphQL resolver returns a 500 error if `dateFrom`/`dateTo` are sent as explicit `null` rather than omitted — this tool omits the keys entirely when unset.

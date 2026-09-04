@@ -37,6 +37,9 @@ from .models import (
     RegulationSearchResult,
     RelatedMatter,
     SourceRecord,
+    StjornartidindiAdvertResult,
+    StjornartidindiSearchHit,
+    StjornartidindiSearchResult,
 )
 
 REGISTRY_PATH = Path(__file__).with_name("source_registry.json")
@@ -77,8 +80,19 @@ def registry_record(key: str) -> SourceRecord:
 def _clean_text(soup: BeautifulSoup) -> str:
     for tag in soup(["script", "style", "nav", "footer", "noscript"]):
         tag.decompose()
-    text = "\n".join(line.strip() for line in soup.get_text("\n").splitlines() if line.strip())
-    return text[:MAX_TEXT_CHARS]
+    # Some documents' own source HTML has literal newlines inside a single text
+    # node — one word per line within one <p> (seen live in legacy Stjórnartíðindi
+    # adverts) — so get_text() preserves those as real line breaks no matter what
+    # separator is used. Mark real paragraph/block boundaries with a placeholder
+    # distinct from any whitespace, collapse every actual newline in the source
+    # text to a space, then turn only the placeholders back into line breaks.
+    for tag in soup.find_all(["p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6"]):
+        tag.insert_after("\x00")
+    text = soup.get_text(" ").replace("\n", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = text.replace("\x00", "\n")
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    return "\n".join(lines)[:MAX_TEXT_CHARS]
 
 
 def _extract_fields(soup: BeautifulSoup) -> list[EeaField]:
@@ -545,6 +559,117 @@ async def fetch_bill_document(thing: int, document_number: int) -> BillDocumentR
         provenance=Provenance(
             publisher=source.publisher,
             source_url=html_url if text_source == "html" else pdf_url,
+            retrieved_at=utc_now(),
+            authority_class=source.authority_class,
+            authority_label=source.authority_label,
+        ),
+    )
+
+
+STJORNARTIDINDI_ADVERTS_QUERY = """
+query($input: OfficialJournalOfIcelandAdvertsInput!) {
+  officialJournalOfIcelandAdverts(input: $input) {
+    adverts {
+      id
+      department { title slug }
+      title
+      publicationNumber { full }
+      publicationDate
+      involvedParty { title }
+      type { title }
+    }
+    paging { totalItems }
+  }
+}
+"""
+
+STJORNARTIDINDI_ADVERT_QUERY = """
+query($params: OfficialJournalOfIcelandAdvertSingleParams!) {
+  officialJournalOfIcelandAdvert(params: $params) {
+    advert {
+      id
+      department { title slug }
+      title
+      publicationNumber { full }
+      publicationDate
+      signatureDate
+      involvedParty { title }
+      type { title }
+      categories { title }
+      document { html }
+    }
+  }
+}
+"""
+
+
+async def search_stjornartidindi(
+    query: str | None = None,
+    department: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+) -> StjornartidindiSearchResult:
+    limit = max(1, min(limit, 50))
+    input_params: dict = {
+        "search": query or "",
+        "department": [department] if department else [],
+        "category": [],
+        "involvedParty": [],
+        "mainType": [],
+        "sortBy": "",
+        "page": 1,
+        "pageSize": limit,
+    }
+    # The upstream resolver 500s on an explicit dateFrom/dateTo: null rather than
+    # treating it as "unbounded" — omit the keys entirely when unset (verified live).
+    if date_from:
+        input_params["dateFrom"] = date_from
+    if date_to:
+        input_params["dateTo"] = date_to
+    variables = {"input": input_params}
+    data = await _graphql(STJORNARTIDINDI_ADVERTS_QUERY, variables)
+    result = data["officialJournalOfIcelandAdverts"]
+    hits = [
+        StjornartidindiSearchHit(
+            id=item["id"],
+            department=(item.get("department") or {}).get("slug", ""),
+            title=item.get("title") or "",
+            publication_number=(item.get("publicationNumber") or {}).get("full"),
+            publication_date=item.get("publicationDate"),
+            involved_party=(item.get("involvedParty") or {}).get("title"),
+            advert_type=(item.get("type") or {}).get("title"),
+        )
+        for item in result["adverts"]
+    ]
+    return StjornartidindiSearchResult(query=query, total_items=result["paging"]["totalItems"], hits=hits)
+
+
+async def fetch_stjornartidindi_advert(advert_id: str) -> StjornartidindiAdvertResult:
+    data = await _graphql(STJORNARTIDINDI_ADVERT_QUERY, {"params": {"id": advert_id}})
+    advert = (data.get("officialJournalOfIcelandAdvert") or {}).get("advert")
+    if advert is None:
+        raise ValueError(f"No Stjórnartíðindi advert found for id {advert_id!r}.")
+
+    html = (advert.get("document") or {}).get("html") or ""
+    soup = BeautifulSoup(html, "lxml")
+    text = _clean_text(soup)
+
+    source = registry_record("stjornartidindi")
+    return StjornartidindiAdvertResult(
+        id=advert["id"],
+        department=(advert.get("department") or {}).get("slug", ""),
+        title=advert.get("title") or "",
+        publication_number=(advert.get("publicationNumber") or {}).get("full"),
+        publication_date=advert.get("publicationDate"),
+        signature_date=advert.get("signatureDate"),
+        involved_party=(advert.get("involvedParty") or {}).get("title"),
+        advert_type=(advert.get("type") or {}).get("title"),
+        categories=[c["title"] for c in advert.get("categories", []) if c.get("title")],
+        text=text,
+        provenance=Provenance(
+            publisher=source.publisher,
+            source_url=f"https://island.is/stjornartidindi/{advert_id}",
             retrieved_at=utc_now(),
             authority_class=source.authority_class,
             authority_label=source.authority_label,

@@ -2,6 +2,7 @@ from iceland_context_mcp.data_skills import attribution_header, get_data_skill, 
 from iceland_context_mcp.open_data import open_data_registry_record, open_data_registry_records
 from iceland_context_mcp.search import _fts_query
 from iceland_context_mcp.sources import (
+    _clean_text,
     _extract_law_basis,
     _regulation_identifier,
     _to_law_citation_tag,
@@ -124,6 +125,26 @@ def test_open_data_registry_new_sources():
     assert lmi.wfs_version == "2.0.0"
     umferd = open_data_registry_record("umferd")
     assert umferd.wfs_version == "1.0.0"
+
+
+def test_clean_text_collapses_word_per_line_source_markup():
+    from bs4 import BeautifulSoup
+
+    # Reproduces a real pattern seen live in legacy Stjórnartíðindi HTML: literal
+    # newlines between every word inside a single text node, not separate tags.
+    html = "<p>\nÁbyrgðaraðili\nskal\ní\nákveðnum\ntilfellum\n</p><p>\nAnnar\nkafli.\n</p>"
+    soup = BeautifulSoup(html, "lxml")
+    text = _clean_text(soup)
+    assert text == "Ábyrgðaraðili skal í ákveðnum tilfellum\nAnnar kafli."
+
+
+def test_clean_text_normal_html_unaffected():
+    from bs4 import BeautifulSoup
+
+    html = "<h1>Title</h1><p>First paragraph.</p><p>Second paragraph.</p>"
+    soup = BeautifulSoup(html, "lxml")
+    text = _clean_text(soup)
+    assert text == "Title\nFirst paragraph.\nSecond paragraph."
 
 
 def test_eur_lex_rejects_unsupported_language():

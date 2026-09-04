@@ -65,6 +65,7 @@
     "authority_class": "A1",
     "authority_label": "Official promulgation source",
     "base_url": "https://island.is/stjornartidindi",
-    "notes": "PoC registry entry only; a structured adapter should be added once a reliable supported interface is confirmed."
+    "machine_source": "https://island.is/api/graphql",
+    "notes": "Public, unauthenticated GraphQL (same endpoint as this PoC's court-ruling/vehicle/regulation-adjacent tools): officialJournalOfIcelandAdverts for search, officialJournalOfIcelandAdvert(params:{id}) for one advert's full text. department: a-deild (laws/presidential acts), b-deild (regulations/administrative notices — the great majority of ~40k total adverts), c-deild (international agreements). The search resolver 500s if dateFrom/dateTo are passed as explicit null rather than omitted (verified live) — this PoC's tool omits the keys entirely when unset."
   }
 }

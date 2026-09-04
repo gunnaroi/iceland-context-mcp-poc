@@ -19,6 +19,8 @@ from .models import (
     RegulationSearchResult,
     SourceRecord,
     SourceRegistryResult,
+    StjornartidindiAdvertResult,
+    StjornartidindiSearchResult,
 )
 from .data_skills import attribution_header, get_data_skill, list_data_skills
 from .open_data import (
@@ -70,10 +72,12 @@ from .sources import (
     fetch_eur_lex_act,
     fetch_law,
     fetch_regulation,
+    fetch_stjornartidindi_advert,
     registry_record,
     registry_records,
     search_court_rulings as search_court_rulings_source,
     search_regulations as search_regulations_source,
+    search_stjornartidindi as search_stjornartidindi_source,
 )
 
 SERVER_INSTRUCTIONS = """
@@ -228,6 +232,33 @@ async def get_bill_document(thing: int, document_number: int) -> BillDocumentRes
     garbled — a known limitation of the extraction library on some table layouts, not a data error.
     """
     return await fetch_bill_document(thing, document_number)
+
+
+@mcp.tool()
+async def search_stjornartidindi(
+    query: str | None = None,
+    department: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+) -> StjornartidindiSearchResult:
+    """Search Stjórnartíðindi (the Icelandic Government Gazette) — the official promulgation record.
+
+    department is 'a-deild' (laws/presidential acts), 'b-deild' (regulations/administrative notices — the
+    great majority of volume), or 'c-deild' (international agreements). date_from/date_to are ISO dates
+    (YYYY-MM-DD). Use get_stjornartidindi_advert for full text.
+    """
+    return await search_stjornartidindi_source(query, department, date_from, date_to, limit)
+
+
+@mcp.tool()
+async def get_stjornartidindi_advert(advert_id: str) -> StjornartidindiAdvertResult:
+    """Retrieve one Stjórnartíðindi advert's full text by id (from search_stjornartidindi).
+
+    This is the raw promulgation record — for a regulation this is often the same text get_regulation
+    already returns (which additionally tracks amendments/consolidation on top of the original promulgation).
+    """
+    return await fetch_stjornartidindi_advert(advert_id)
 
 
 @mcp.tool()

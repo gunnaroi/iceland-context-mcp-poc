@@ -102,6 +102,48 @@ class EurLexActResult(BaseModel):
     )
 
 
+class StjornartidindiSearchHit(BaseModel):
+    id: str
+    department: str
+    title: str
+    publication_number: str | None = None
+    publication_date: str | None = None
+    involved_party: str | None = None
+    advert_type: str | None = None
+
+
+class StjornartidindiSearchResult(BaseModel):
+    query: str | None = None
+    total_items: int
+    hits: list[StjornartidindiSearchHit]
+    warning: str = (
+        "department values are 'a-deild' (laws/presidential acts), 'b-deild' (regulations/administrative "
+        "notices — the great majority of volume), or 'c-deild' (international agreements). Use "
+        "get_stjornartidindi_advert for full text."
+    )
+
+
+class StjornartidindiAdvertResult(BaseModel):
+    id: str
+    department: str
+    title: str
+    publication_number: str | None = None
+    publication_date: str | None = None
+    signature_date: str | None = None
+    involved_party: str | None = None
+    advert_type: str | None = None
+    categories: list[str] = Field(default_factory=list)
+    text: str
+    provenance: Provenance
+    status_note: str = (
+        "Official promulgation text from Stjórnartíðindi (the Icelandic Government Gazette) via island.is. "
+        "This is the actual publication event — for a regulation this is often the same text get_regulation "
+        "already returns (that tool tracks amendments/consolidation on top; this one is the raw promulgation "
+        "record). A-deild carries laws and presidential acts, B-deild regulations and administrative notices "
+        "(the bulk of volume), C-deild international agreements."
+    )
+
+
 class RegulationAmendmentEvent(BaseModel):
     date: str | None = None
     official_identifier: str
