@@ -22,17 +22,54 @@ The first version exposes:
 
 No protected island.is/X-Road data, authenticated portals, write tools, or internal documents are used.
 
-## Reference resources beyond this PoC's own scope
+## Open-data tools and reference resources beyond this PoC's legal/EEA scope
 
 `context://iceland-data/index` and `context://iceland-data/skill/{name}` expose all 56 `SKILL.md` docs from
 [jokull/icelandic-data](https://github.com/jokull/icelandic-data) (MIT-licensed, vendored with attribution —
-see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)), covering public Icelandic data sources well beyond
-this PoC's stated legal/EEA scope: national statistics, government dashboards, business filings, property
-records, transport, environment, personal finance, and more. This is a deliberate scope decision, not scope
-creep by accident — these are **reference documentation only**: unlike every tool above, they are not
-retrieved live, carry no provenance or authority-class metadata, and this project makes no claim about
-their accuracy or upstream currency. Two of them (`althingi`, `domstolar`) directly informed how `get_bill`
-and `search_court_rulings`/`get_court_ruling` were built; the other 54 are included for completeness.
+see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)) as **reference documentation only** — not retrieved
+live, no provenance/authority-class, this project makes no claim about their accuracy or currency. This is a
+deliberate scope decision (see conversation history), not scope creep by accident.
+
+On top of that documentation, `open_data.py` adds **live** tools for every one of those 56 sources that has
+a genuine public API/WFS/bulk-download endpoint — no HTML scraping, no reverse-engineered Power BI/Tableau
+dashboard, no Playwright/JS rendering. Implemented so far (`context://iceland-data/registry` has full notes):
+
+| Tool | Covers |
+|---|---|
+| `get_geodata(source_key, layer, ...)` | `umferd` (traffic counters), `fiskistofa` (fishing closures), `ust-gis` (contaminated land), `lmi` (national topographic/admin geodata) — one generic WFS client for all four |
+| `get_hagstofa_table(table_path, filters)` | `hagstofan` (any PX-Web table) and `income-distribution` (TEK01001 is just another table path) |
+| `get_vehicle(search)` | `car` — exact plate/VIN lookup |
+| `get_eurostat_series(dataset, filters)` | `eurostat` — EU/euro-area comparison series |
+| `get_weather_observations` / `get_earthquakes` | `vedur` |
+| `get_air_quality(date, station_local_id)` | `loftgaedi` |
+| `get_bond(orderbook_id)` | `lanamal` — RIKB/RIKS government bond yields |
+
+Like the reference resources, these carry no authority-class — this data isn't legal in nature. Unlike the
+reference resources, they're live retrieval, same as this PoC's own core tools.
+
+### Remaining sources — tiered by feasibility, not yet built
+
+**Clean API, no scraping needed (next up):** `rikisreikningur` (Azure Functions API, public non-secret key),
+`opnirreikningar` (DataTables JSON), `skipulagsmal` (Planitor REST + OpenAPI spec), `heimsmarkmid` (open-sdg
+CSV/JSON on GitHub Pages), `tenders` (TED REST API; OCDS bulk download is CC BY-NC-SA — note the license before
+redistributing), `eea-sdi`/`lmi-hrl`/`natt` (GeoServer WFS/WCS, same pattern as `get_geodata`), `fjarlog` and
+`gengi`'s historical rates (frankfurter.dev) — small HTML link-discovery only, same pattern already used by
+`indexer.py` for the Lagasafn ZIP.
+
+**PDF-based, not attempted yet (own tier — fetching+parsing a public PDF isn't scraping, but locating some of
+these PDFs may need it):** `financials`, `skatturinn`, `nasdaq`, `insurance`, `annual-report-cache`.
+
+**Excluded per explicit scope decision — requires scraping, Power BI/Tableau reverse-engineering, or
+Playwright/JS rendering:** `byggdastofnun`, `co2`, `farsaeld-barna`, `ferdamalastofa`, `hms`, `landlaeknir`,
+`maelabord-landbunadarins`, `maskina`, `samgongustofa`, `sedlabanki` (its SDMX parts could be revisited),
+`skodanakannanir`, `tekjusagan`, `vernd`, `vinnumalastofnun`.
+
+**Not real independent sources (methodology docs or derivative of another skill already covered):**
+`new-data-source`, `pdf-parsing`, `liteparse`, `powerbi`, `kortagerd`, `sectoral-balances`, `iceaddr` (an
+offline bundled dataset, not a live source), `laun` (a calculator, not a data retrieval).
+
+`hafogvatn`'s "embedded JSON inside static HTML" sits right on the scraping/API line and wasn't attempted
+this round — worth a closer look before deciding either way.
 
 ## Why this is a good first PoC
 

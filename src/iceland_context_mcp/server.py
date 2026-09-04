@@ -19,6 +19,25 @@ from .models import (
     SourceRegistryResult,
 )
 from .data_skills import attribution_header, get_data_skill, list_data_skills
+from .open_data import (
+    AirQualityResult,
+    BondResult,
+    EarthquakeResult,
+    EurostatSeriesResult,
+    GeoDataResult,
+    StatTableResult,
+    VehicleResult,
+    WeatherObservationsResult,
+    get_air_quality,
+    get_bond,
+    get_earthquakes,
+    get_eurostat_series,
+    get_geodata,
+    get_hagstofa_table,
+    get_vehicle,
+    get_weather_observations,
+    open_data_registry_records,
+)
 from .search import search_laws as search_laws_index
 from .sources import (
     fetch_bill,
@@ -62,6 +81,10 @@ Mandatory interpretation rules:
     domains (statistics, dashboards, business filings, etc.), vendored from a third-party project. They are
     not retrieved live, carry no provenance/authority-class, and are unrelated to this server's own
     legal/EEA tools — do not treat their content with the same trust level as a tool result above.
+12. The get_geodata/get_hagstofa_table/get_vehicle/get_eurostat_series/get_weather_observations/
+    get_earthquakes/get_air_quality/get_bond tools ARE live retrieval, unlike rule 11's resources — but
+    this data is not legal/EEA in nature, so it carries no authority-class and this server makes no legal
+    claim about it. See context://iceland-data/registry for source notes and known upstream quirks.
 """.strip()
 
 mcp = MCPServer(
@@ -217,6 +240,99 @@ async def trace_eea_public_context(celex: str) -> EeaCombinedResult:
     if isinstance(efta, Exception):
         efta = None
     return EeaCombinedResult(celex=iceland.celex, iceland=iceland, efta=efta)
+
+
+@mcp.resource("context://iceland-data/registry")
+def open_data_registry_resource() -> str:
+    """Registry of live open-data tools below — public Icelandic/EU data sources beyond this PoC's legal/EEA scope."""
+    lines = []
+    for src in open_data_registry_records():
+        lines.append(f"{src.key}: {src.name} — {src.base_url}\n{src.notes}")
+    return "\n\n".join(lines)
+
+
+@mcp.tool()
+async def get_geodata_tool(
+    source_key: str, layer: str, cql_filter: str | None = None, srs: str = "EPSG:4326", limit: int = 50
+) -> GeoDataResult:
+    """Fetch features from a public Icelandic GeoServer WFS layer.
+
+    source_key is one of: umferd (traffic counters), fiskistofa (fishing closures/areas), ust-gis (contaminated
+    land etc.), lmi (national topographic/admin geodata — layer must be "WORKSPACE:LayerName", e.g. "ERM:Landmask").
+    Current-state spatial data, not a history — see context://iceland-data/registry for layer catalogs and caveats.
+    Unrelated to this PoC's legal/EEA tools; no authority-class/provenance.
+    """
+    return await get_geodata(source_key, layer, cql_filter, srs, limit)
+
+
+@mcp.tool()
+async def get_hagstofa_table_tool(table_path: str, filters: dict[str, list[str]] | None = None) -> StatTableResult:
+    """Fetch an Hagstofa Íslands (Statistics Iceland) PX-Web table by its path (e.g. 'Efnahagur/.../THJ01103.px').
+
+    Optional `filters` maps a PX-Web dimension code to allowed values to narrow the query server-side.
+    Values are as published — check the table's own metadata for units/scale (e.g. thousands of ISK, mean vs.
+    median codes) before using them. Unrelated to this PoC's legal/EEA tools; no authority-class/provenance.
+    """
+    return await get_hagstofa_table(table_path, filters)
+
+
+@mcp.tool()
+async def get_vehicle_tool(search: str) -> VehicleResult:
+    """Look up one Icelandic vehicle by exact plate number or VIN via the island.is public registry.
+
+    Requires an exact match (case-insensitive) — a partial plate returns no result, verified empirically
+    despite some documentation suggesting fuzzy search. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_vehicle(search)
+
+
+@mcp.tool()
+async def get_eurostat_series_tool(dataset: str, filters: dict[str, str] | None = None) -> EurostatSeriesResult:
+    """Fetch an Eurostat dataset (EU/euro-area statistics) by code, e.g. 'prc_hicp_midx' with filters like geo=EA20.
+
+    Useful as an EU/euro-area comparison counterpart to Hagstofa series. The 'time' dimension cannot be
+    range-filtered server-side — fetch and slice locally. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_eurostat_series(dataset, filters)
+
+
+@mcp.tool()
+async def get_weather_observations_tool(aggregation: str = "10min", station_id: int | None = None) -> WeatherObservationsResult:
+    """Latest Icelandic Met Office (Veðurstofa) automatic-weather-station observations.
+
+    aggregation is one of: 10min, hour, day, month, year. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_weather_observations(aggregation, station_id)
+
+
+@mcp.tool()
+async def get_earthquakes_tool(start_time: str, size_min: float | None = None, limit: int = 100) -> EarthquakeResult:
+    """Icelandic seismic events (IMO) from a start time (yyyy-mm-ddTHH:MM:SS) onward, optionally filtered by magnitude.
+
+    Always bound with start_time — the upstream API has no server-side row limit and will return the full
+    history otherwise. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_earthquakes(start_time, size_min, limit)
+
+
+@mcp.tool()
+async def get_air_quality_tool(date: str | None = None, station_local_id: str | None = None) -> AirQualityResult:
+    """Icelandic air quality readings (PM10/PM2.5/NO2/H2S/...) — latest, one station's latest, or all stations for one date (YYYY-MM-DD).
+
+    Values arrive as strings upstream — cast to float yourself; readings above ~2000 are typically instrument
+    faults. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_air_quality(date, station_local_id)
+
+
+@mcp.tool()
+async def get_bond_tool(orderbook_id: str) -> BondResult:
+    """Icelandic government bond (RIKB/RIKS) market data by orderbook id, e.g. 'RIKB_31_0124'.
+
+    Prefer the result's latest_yield_fixing over the raw closingYield field, which reflects the last actual
+    trade and can be stale for thinly-traded bonds. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_bond(orderbook_id)
 
 
 def main() -> None:

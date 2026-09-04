@@ -1,0 +1,62 @@
+{
+  "umferd": {
+    "name": "Umferð — Vegagerðin traffic counters",
+    "publisher": "Vegagerðin (Icelandic Road Administration)",
+    "base_url": "https://gagnaveita.vegagerdin.is/geoserver/gis/ows",
+    "notes": "GeoServer WFS 1.0.0, no auth. Key layers: gis:umferdvika_2021_1 (real-time 15-min counts, ~254 features), gis:umf_talningar_stefnugreint_stadir (station metadata). Current-state snapshot, not a history — repeat calls to build a time series yourself."
+  },
+  "fiskistofa": {
+    "name": "Fiskistofa — fishing closures and areas",
+    "publisher": "Fiskistofa (Directorate of Fisheries)",
+    "base_url": "https://gis.is/geoserver/fiskistofa/wfs",
+    "notes": "Public Hafsjá GeoServer WFS, no auth. Primary layer virkar_skyndilokanir (active rapid closures); other virk_*/virkar_* layers cover regulations and spawning/fishing-area restrictions. Paid catch/quota data (Gagnaveita) is deliberately excluded upstream and not covered here."
+  },
+  "ust-gis": {
+    "name": "UST GIS — Environment Agency spatial catalogue",
+    "publisher": "Umhverfis- og orkustofnun (Environment and Energy Agency)",
+    "base_url": "https://gis.ust.is/geoserver/ows",
+    "notes": "GeoServer WFS, no auth. INSPIRE:mengadur_jardvegur is the contaminated-land registry (confirmed + suspected + historical sites — not a remediation count). Coordinates/risk class can be null on otherwise valid rows."
+  },
+  "lmi": {
+    "name": "LMI — Landmælingar Íslands national geodata",
+    "publisher": "Landmælingar Íslands (National Land Survey)",
+    "base_url": "https://gis.lmi.is/geoserver/{workspace}/wfs",
+    "notes": "GeoServer WFS 2.0.0, no auth. base_url has a {workspace} placeholder — pass the full layer as 'WORKSPACE:LayerName' (e.g. 'ERM:Landmask') to get_geodata and this tool substitutes the workspace itself. Workspaces: ERM (topographic, 1:250k), EBM (admin boundaries, 1:100k), ni (Náttúrufræðistofnun geology/nature), LMI_vektor (municipalities/hazards), LHG (maritime)."
+  },
+  "hagstofan": {
+    "name": "Hagstofa Íslands — PX-Web statistics API",
+    "publisher": "Hagstofa Íslands (Statistics Iceland)",
+    "base_url": "https://px.hagstofa.is/pxis/api/v1/is/",
+    "notes": "No auth. get_hagstofa_table takes a table path (e.g. 'Efnahagur/thjodhagsreikningar/landsframl/1_landsframleidsla/THJ01103.px') and optional PX-Web filters. Also covers Hagstofa's income-distribution table (TEK01001) — values are typically in thousands of ISK, and PX 'Eining' codes distinguish mean vs. median; check the table's own metadata before treating a value as final."
+  },
+  "car": {
+    "name": "island.is public vehicle registry",
+    "publisher": "Samgöngustofa via island.is",
+    "base_url": "https://island.is/api/graphql",
+    "notes": "Public GraphQL, no auth (same endpoint as this PoC's court-ruling tools). publicVehicleSearch is fuzzy — a partial plate/VIN can return multiple vehicles; some fields are null for older vehicles."
+  },
+  "eurostat": {
+    "name": "Eurostat — EU statistics REST API",
+    "publisher": "Publications Office of the European Union / Eurostat",
+    "base_url": "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/",
+    "notes": "No API key. Returns json-stat2; this tool decodes the composite row-major value index into (dimension label -> value) observations. Useful as an EU/euro-area comparison counterpart to Hagstofa series. The 'time' dimension cannot be range-filtered server-side (fetch and slice locally)."
+  },
+  "vedur": {
+    "name": "Veðurstofa Íslands — weather and earthquakes",
+    "publisher": "Veðurstofa Íslands (Icelandic Meteorological Office)",
+    "base_url": "https://api.vedur.is",
+    "notes": "No auth, OpenAPI-described. /weather for observations/stations/forecasts, /quakes for seismic events (no equivalent in the old XML API). Prefer this over the legacy xmlweather.vedur.is, which Veðurstofa itself says is superseded. Earthquake queries have no server-side row limit — always bound with start_time."
+  },
+  "loftgaedi": {
+    "name": "UST air quality monitoring",
+    "publisher": "Umhverfisstofnun (Environment Agency)",
+    "base_url": "https://api.ust.is/aq/a",
+    "notes": "No auth, CORS enabled. 57 stations, hourly PM10/PM2.5/NO2/H2S etc. Values arrive as strings; readings above ~2000 are typically instrument faults."
+  },
+  "lanamal": {
+    "name": "Lánamál ríkisins — government bond market",
+    "publisher": "Government Debt Management Iceland (lanamal.is)",
+    "base_url": "https://www.lanamal.is/api/market/LoadIndexedDetail",
+    "notes": "No auth, but requires a browser-like User-Agent and a Referer pointing at the matching /markadsyfirlit page (a bare request with no headers is blocked). RIKB (non-indexed) and RIKS (indexed) government bond series. The top-level closingYield can be stale for thinly-traded bonds — this tool surfaces the daily chartData fixing instead as latest_yield_fixing."
+  }
+}

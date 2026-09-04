@@ -1,4 +1,5 @@
 from iceland_context_mcp.data_skills import attribution_header, get_data_skill, list_data_skills
+from iceland_context_mcp.open_data import open_data_registry_record, open_data_registry_records
 from iceland_context_mcp.search import _fts_query
 from iceland_context_mcp.sources import (
     _extract_law_basis,
@@ -74,3 +75,16 @@ def test_attribution_header_names_source():
     header = attribution_header("althingi")
     assert "jokull/icelandic-data" in header
     assert "MIT" in header
+
+
+def test_open_data_registry():
+    records = open_data_registry_records()
+    keys = {r.key for r in records}
+    assert {"umferd", "fiskistofa", "ust-gis", "lmi", "hagstofan", "car", "eurostat", "vedur", "loftgaedi", "lanamal"} <= keys
+    lmi = open_data_registry_record("lmi")
+    assert "{workspace}" in lmi.base_url
+    try:
+        open_data_registry_record("does-not-exist")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
