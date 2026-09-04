@@ -14,6 +14,7 @@ The first version exposes:
 - `get_regulation(number, year, view)` — official reglugerð register (current or as-originally-published text), with amendment history and a best-effort extraction of the regulation's stated legal basis (enabling law);
 - `search_regulations(query)` — free-text search over the regulation register;
 - `get_bill(malnr, thing, malsflokkur)` — Alþingi parliamentary matter (bill/resolution/question) with status, subject categories and its document trail (stjórnarfrumvarp/nefndarálit/breytingartillaga/...);
+- `search_court_rulings(query, court, date_from, date_to)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight;
 - `get_iceland_eea_status(celex)` — public EES-gagnagrunnur retrieval;
 - `get_efta_eea_factsheet(celex)` — public EFTA EEA-Lex retrieval;
 - `trace_eea_public_context(celex)` — combines the two EEA evidence sources;
@@ -127,13 +128,20 @@ Try a CELEX number such as `32016R0679`. The model should use the Icelandic EES 
 
 ## Suggested next increment
 
-Implemented so far: Alþingi open parliamentary XML (`get_bill`) and the reglugerð register with law-basis extraction
-(`get_regulation`, `search_regulations`). Remaining, roughly in order:
+Implemented so far: Alþingi open parliamentary XML (`get_bill`), the reglugerð register with law-basis extraction
+(`get_regulation`, `search_regulations`), and unified court rulings (`search_court_rulings`, `get_court_ruling`).
+Remaining, roughly in order:
 
 1. Point-in-time Lagasafn text (`as_of` on `get_law`) by indexing the per-session archive instead of only the latest snapshot;
 2. Stjórnartíðindi A-deild retrieval/structured promulgation metadata;
 3. Samráðsgátt;
-4. Court rulings — `island.is/domar` now unifies all three court levels behind a public GraphQL API (`island.is/api/graphql`, `webVerdicts`/`webVerdictById`, with a `laws` filter), which is simpler than the three separate court sites this repo originally assumed; full ruling text often comes back as a base64 PDF rather than plain text, so a PDF-extraction step is still needed. Independently re-check `robots.txt` before building against it — the earlier per-court `/domar*` disallow may or may not carry over post-migration;
+4. A `laws` filter is exposed by the same `webVerdicts` GraphQL query used by `search_court_rulings` — not yet wired up as a tool parameter, and would give a citation-graph-style "rulings citing law X" lookup similar to what Urðarbrunnur's `trace_citations` benchmark showed is valuable, sourced directly from island.is instead;
 5. EUR-Lex/CELLAR as the EU machine source.
 
 Keep the MCP tool surface stable while swapping brittle HTML adapters for supported source contracts.
+
+### Known upstream quirks (verified against the live endpoints, not assumptions)
+
+- `search_regulations`: the reglugerð API's `perPage` parameter is silently ignored server-side (always returns a fixed page size); `limit` is enforced client-side instead.
+- `search_court_rulings`: the `court` filter is confirmed reliable only for `"Hæstiréttur"` — `"Landsréttur"` or a héraðsdómur name silently returns zero results even though those exact strings appear in the returned data. Filter by court client-side for anything but Hæstiréttur.
+- `get_court_ruling`: full text is structured `richText` for some rulings (mainly recent Hæstiréttur) and a PDF (extracted via `pdfplumber`) for others — check `text_source` on the result.

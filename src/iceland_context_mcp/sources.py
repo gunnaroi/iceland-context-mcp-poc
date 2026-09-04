@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import io
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -7,11 +9,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+import pdfplumber
 from bs4 import BeautifulSoup
 
 from .models import (
     BillDocument,
     BillResult,
+    CourtRulingResult,
+    CourtRulingSearchHit,
+    CourtRulingSearchResult,
     EeaField,
     EeaResult,
     LawBasisReference,
@@ -31,6 +37,7 @@ MAX_TEXT_CHARS = 30_000
 
 REGLUGERD_API = "https://api.reglugerd.is/api/v1"
 ALTHINGI_XML = "https://www.althingi.is/altext/xml"
+ISLAND_IS_GRAPHQL = "https://island.is/api/graphql"
 
 # Icelandic regulations state their enabling statute in a "heimild"/"lagastoð"
 # clause, e.g. "...sett samkvæmt heimild í ... laga nr. 136/2022 um landamæri..."
@@ -387,5 +394,150 @@ async def fetch_bill(malnr: int, thing: int | None = None, malsflokkur: str = "A
             retrieved_at=utc_now(),
             authority_class=source.authority_class,
             authority_label=source.authority_label,
+        ),
+    )
+
+
+def _court_authority(court: str) -> tuple[str, str]:
+    normalized = court.strip().lower()
+    if "hæstiréttur" in normalized:
+        return "C1", "Official supreme court judgment — highest domestic precedent"
+    if "landsréttur" in normalized:
+        return "C2", "Official appellate court judgment"
+    if "héraðsdóm" in normalized:
+        return "C3", "Official first-instance court judgment"
+    return "C", "Official Icelandic court judgment"
+
+
+async def _graphql(query: str, variables: dict) -> dict:
+    timeout = httpx.Timeout(30.0, connect=10.0)
+    async with httpx.AsyncClient(
+        timeout=timeout, headers={"User-Agent": USER_AGENT, "Content-Type": "application/json"}
+    ) as client:
+        response = await client.post(ISLAND_IS_GRAPHQL, json={"query": query, "variables": variables})
+        response.raise_for_status()
+        payload = response.json()
+    if "errors" in payload:
+        raise ValueError(f"island.is GraphQL error: {payload['errors']}")
+    return payload["data"]
+
+
+def _richtext_to_plain(node: dict) -> str:
+    if node.get("nodeType") == "text":
+        return node.get("value", "")
+    joined = "".join(_richtext_to_plain(c) for c in node.get("content", []))
+    if node.get("nodeType", "").startswith(("paragraph", "heading")):
+        return joined + "\n\n"
+    return joined
+
+
+def _pdf_base64_to_text(b64_data: str, max_chars: int) -> str:
+    raw = base64.b64decode(b64_data)
+    parts: list[str] = []
+    total = 0
+    with pdfplumber.open(io.BytesIO(raw)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            parts.append(page_text)
+            total += len(page_text)
+            if total >= max_chars:
+                break
+    return "\n\n".join(parts)[:max_chars]
+
+
+VERDICTS_SEARCH_QUERY = """
+query($input: WebVerdictsInput!) {
+  webVerdicts(input: $input) {
+    total
+    items { id court caseNumber verdictDate title keywords }
+  }
+}
+"""
+
+VERDICT_BY_ID_QUERY = """
+query($input: WebVerdictByIdInput!) {
+  webVerdictById(input: $input) {
+    item { title court caseNumber verdictDate keywords richText pdfString }
+  }
+}
+"""
+
+
+async def search_court_rulings(
+    query: str | None = None,
+    court: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+) -> CourtRulingSearchResult:
+    limit = max(1, min(limit, 30))
+    variables = {
+        "input": {
+            "searchTerm": query,
+            "court": [court] if court else [],
+            "caseCategories": None,
+            "caseTypes": None,
+            "keywords": None,
+            "caseContact": None,
+            "caseNumber": None,
+            "dateFrom": date_from,
+            "dateTo": date_to,
+            "page": 1,
+        }
+    }
+    data = await _graphql(VERDICTS_SEARCH_QUERY, variables)
+    result = data["webVerdicts"]
+    hits = []
+    for item in result["items"][:limit]:
+        court_name = item.get("court") or ""
+        authority_class, _ = _court_authority(court_name)
+        hits.append(
+            CourtRulingSearchHit(
+                id=item["id"],
+                court=court_name,
+                case_number=item.get("caseNumber"),
+                verdict_date=item.get("verdictDate"),
+                title=item.get("title") or "",
+                keywords=item.get("keywords") or [],
+                authority_class=authority_class,
+            )
+        )
+    return CourtRulingSearchResult(query=query, total_items=result["total"], hits=hits)
+
+
+async def fetch_court_ruling(ruling_id: str) -> CourtRulingResult:
+    data = await _graphql(VERDICT_BY_ID_QUERY, {"input": {"id": ruling_id}})
+    item = (data.get("webVerdictById") or {}).get("item")
+    if item is None:
+        raise ValueError(f"No court ruling found for id {ruling_id!r}.")
+
+    if item.get("richText"):
+        text = _richtext_to_plain(item["richText"]["document"]).strip()[:MAX_TEXT_CHARS]
+        text_source = "richText"
+    elif item.get("pdfString"):
+        text = _pdf_base64_to_text(item["pdfString"], MAX_TEXT_CHARS)
+        text_source = "pdf"
+    else:
+        text = ""
+        text_source = "unavailable"
+
+    registry_record("domar_island_is")  # validates the registry entry exists; raises loudly otherwise
+    court_name = item.get("court") or ""
+    authority_class, authority_label = _court_authority(court_name)
+    return CourtRulingResult(
+        id=ruling_id,
+        court=court_name,
+        case_number=item.get("caseNumber"),
+        verdict_date=item.get("verdictDate"),
+        title=item.get("title") or "",
+        keywords=item.get("keywords") or [],
+        text=text,
+        text_source=text_source,
+        provenance=Provenance(
+            publisher=court_name or "Íslenskir dómstólar",
+            source_url=f"https://island.is/domar/{ruling_id}",
+            retrieved_at=utc_now(),
+            authority_class=authority_class,
+            authority_label=authority_label,
         ),
     )

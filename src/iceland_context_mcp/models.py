@@ -157,6 +157,50 @@ class RelatedMatter(BaseModel):
     title: str
 
 
+class CourtRulingSearchHit(BaseModel):
+    id: str
+    court: str
+    case_number: str | None = None
+    verdict_date: str | None = None
+    title: str
+    keywords: list[str] = Field(default_factory=list)
+    authority_class: str
+
+
+class CourtRulingSearchResult(BaseModel):
+    query: str | None = None
+    total_items: int
+    hits: list[CourtRulingSearchHit]
+    warning: str = (
+        "Precedential weight differs by court and is reflected in each hit's authority_class "
+        "(C1 Hæstiréttur > C2 Landsréttur > C3 héraðsdómur). Use get_court_ruling for full text. "
+        "The upstream court filter is confirmed reliable only for court='Hæstiréttur' — passing "
+        "'Landsréttur' or a héraðsdómur name silently returns zero results even though those exact "
+        "strings appear in the data (an upstream API limitation, verified against the live endpoint, "
+        "not a bug in this filter's construction). For other courts, search by query/date and filter "
+        "the returned hits' court field client-side instead of relying on the court parameter."
+    )
+
+
+class CourtRulingResult(BaseModel):
+    id: str
+    court: str
+    case_number: str | None = None
+    verdict_date: str | None = None
+    title: str
+    keywords: list[str] = Field(default_factory=list)
+    text: str
+    text_source: str
+    provenance: Provenance
+    status_note: str = (
+        "Official court ruling from the unified island.is verdict register. Precedential weight differs sharply "
+        "by court: Hæstiréttur rulings bind lower courts on questions of law, Landsréttur binds within its "
+        "appellate role, and héraðsdómur rulings bind only the parties to that case. A ruling is evidence of how "
+        "a law has been applied in one case, not a substitute for the law itself — and text_source='pdf' means "
+        "the text below was extracted from a scanned/generated PDF and may contain extraction artifacts."
+    )
+
+
 class BillResult(BaseModel):
     thing: int
     matter_number: int

@@ -7,6 +7,8 @@ from mcp.server import MCPServer
 
 from .models import (
     BillResult,
+    CourtRulingResult,
+    CourtRulingSearchResult,
     EeaCombinedResult,
     EeaResult,
     LawResult,
@@ -19,12 +21,14 @@ from .models import (
 from .search import search_laws as search_laws_index
 from .sources import (
     fetch_bill,
+    fetch_court_ruling,
     fetch_ees,
     fetch_efta,
     fetch_law,
     fetch_regulation,
     registry_record,
     registry_records,
+    search_court_rulings as search_court_rulings_source,
     search_regulations as search_regulations_source,
 )
 
@@ -48,6 +52,11 @@ Mandatory interpretation rules:
 9. get_bill's parliamentary documents (stjórnarfrumvarp/nefndarálit/breytingartillaga/...) are preparatory
    material illustrating legislative intent, not enacted law even once a bill's status shows it passed —
    the enacted text lives in Lagasafn (get_law), not in the bill record.
+10. Court rulings from search_court_rulings/get_court_ruling carry different precedential weight by court:
+    Hæstiréttur (authority_class C1) binds lower courts on questions of law, Landsréttur (C2) binds within
+    its appellate role, and héraðsdómur (C3) rulings bind only the parties to that case. A ruling shows how
+    a law was applied in one case; it is not itself the law, and a single lower-court ruling should not be
+    presented with the same weight as settled Hæstiréttur precedent.
 """.strip()
 
 mcp = MCPServer(
@@ -131,6 +140,36 @@ async def get_bill(malnr: int, thing: int | None = None, malsflokkur: str = "A")
     public travaux préparatoires evidence for legislative intent, not binding legal text.
     """
     return await fetch_bill(malnr, thing, malsflokkur)
+
+
+@mcp.tool()
+async def search_court_rulings(
+    query: str | None = None,
+    court: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 10,
+) -> CourtRulingSearchResult:
+    """Search Icelandic court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register.
+
+    `court` filters to one court's exact name, but is only confirmed reliable for "Hæstiréttur" — the upstream
+    API silently returns zero results for "Landsréttur" or a héraðsdómur name even though those exact strings
+    appear in the data. For other courts, search by query/date and filter the returned hits' court field
+    yourself. Each hit carries authority_class (C1 Hæstiréttur > C2 Landsréttur > C3 héraðsdómur) reflecting
+    precedential weight, which differs sharply by court level. Use get_court_ruling for full text.
+    """
+    return await search_court_rulings_source(query, court, date_from, date_to, limit)
+
+
+@mcp.tool()
+async def get_court_ruling(ruling_id: str) -> CourtRulingResult:
+    """Retrieve one court ruling's full text by id (from search_court_rulings).
+
+    text_source is 'richText' for rulings published as structured text (currently mainly recent Hæstiréttur
+    cases) or 'pdf' when the text was extracted from a scanned/generated PDF, which can carry extraction
+    artifacts. A ruling is evidence of how a law was applied in one case, not a substitute for the law itself.
+    """
+    return await fetch_court_ruling(ruling_id)
 
 
 @mcp.tool()

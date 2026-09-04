@@ -16,29 +16,14 @@
     "base_url": "https://www.althingi.is/altext/xml/",
     "notes": "Official open XML: bills/matters, committee stages, speeches, votes. Alþingi warns that most exports lack a formal schema, may change without notice, and normally update daily. Requires a non-default User-Agent (default httpx UA gets 403'd) and mixed D.M.YYYY/ISO date formats depending on endpoint; parse responses as bytes, not decoded text."
   },
-  "heradsdomstolar": {
-    "name": "Héraðsdómstólar (District Courts)",
-    "publisher": "Dómstólasýslan / Icelandic district courts",
+  "domar_island_is": {
+    "name": "Dómar — island.is (unified court verdict register)",
+    "publisher": "Íslenskir dómstólar / Dómstólasýslan",
     "authority_class": "C",
-    "authority_label": "Official first-instance court judgment",
-    "base_url": "https://www.heradsdomstolar.is/",
-    "notes": "The old per-court sites (heradsdomstolar.is/landsrettur.is/haestirettur.is) now 301-redirect into a unified island.is verdict search covering all courts (island.is/domar), backed by a public GraphQL endpoint (island.is/api/graphql, webVerdicts/webVerdictById queries, a 'laws' filter included) — simpler than the three-site scrape this entry originally assumed. Full text often comes back as a base64 PDF rather than plain text, so a PDF-text step is still needed. Not yet wired to a tool; verify current robots.txt before building against it."
-  },
-  "landsrettur": {
-    "name": "Landsréttur (Court of Appeals)",
-    "publisher": "Landsréttur",
-    "authority_class": "C",
-    "authority_label": "Official appellate court judgment",
-    "base_url": "https://www.landsrettur.is/",
-    "notes": "See heradsdomstolar entry — now served through the same unified island.is/domar verdict search and GraphQL API, not a separate site."
-  },
-  "haestirettur": {
-    "name": "Hæstiréttur (Supreme Court)",
-    "publisher": "Hæstiréttur Íslands",
-    "authority_class": "C",
-    "authority_label": "Official supreme court judgment — highest domestic precedent",
-    "base_url": "https://www.haestirettur.is/",
-    "notes": "See heradsdomstolar entry — now served through the same unified island.is/domar verdict search and GraphQL API, not a separate site."
+    "authority_label": "Official court judgment — precedential weight varies by court (see per-ruling authority_class: C1 Hæstiréttur, C2 Landsréttur, C3 héraðsdómur)",
+    "base_url": "https://island.is/domar",
+    "machine_source": "https://island.is/api/graphql",
+    "notes": "Covers all three court levels (43k+ rulings) through one public, unauthenticated GraphQL endpoint (webVerdicts for search, webVerdictById for one ruling). The old per-court sites (heradsdomstolar.is/landsrettur.is/haestirettur.is) now just 301-redirect here. Full text is structured richText for some rulings (mainly recent Hæstiréttur) and a base64 PDF for others (older/lower-court rulings), extracted with pdfplumber — PDF extraction can carry artifacts, flagged via text_source on the result. The court-name search filter is confirmed reliable only for 'Hæstiréttur'; 'Landsréttur' and héraðsdómur names silently return zero results even though those exact strings appear in the data (verified against the live endpoint) — filter by court client-side for other courts. island.is itself serves no robots.txt (404, not a disallow), unlike the old per-court sites."
   },
   "reglugerdasafn": {
     "name": "Reglugerðasafn (island.is regulation register)",
