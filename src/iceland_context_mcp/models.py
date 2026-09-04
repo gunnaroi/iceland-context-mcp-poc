@@ -80,3 +80,98 @@ class EeaCombinedResult(BaseModel):
         "Treat the sources as evidence about different stages of the provenance chain. "
         "Any final claim about Icelandic applicability should identify the relevant EEA and domestic implementation/commencement evidence."
     )
+
+
+class RegulationAmendmentEvent(BaseModel):
+    date: str | None = None
+    official_identifier: str
+    title: str
+    effect: str
+    status: str | None = None
+
+
+class LawBasisReference(BaseModel):
+    law_nr: str
+    context: str
+    note: str = (
+        "Extracted by pattern match on the regulation's own legal-basis clause. "
+        "This is best-effort text extraction, not a verified structured field — confirm against the source text."
+    )
+
+
+class RegulationResult(BaseModel):
+    official_identifier: str
+    title: str
+    view: str
+    text: str
+    ministry: str | None = None
+    signature_date: str | None = None
+    published_date: str | None = None
+    effective_date: str | None = None
+    repealed: bool = False
+    last_amend_date: str | None = None
+    law_chapters: list[str] = Field(default_factory=list)
+    history: list[RegulationAmendmentEvent] = Field(default_factory=list)
+    effects: list[RegulationAmendmentEvent] = Field(default_factory=list)
+    law_basis: list[LawBasisReference] = Field(default_factory=list)
+    original_doc_url: str | None = None
+    provenance: Provenance
+    status_note: str = (
+        "Text and metadata from the official reglugerð register. 'current' reflects consolidated text after "
+        "published amendments; 'original' is the text as first published in Stjórnartíðindi B-deild. "
+        "law_basis is extracted evidence of the enabling statute, not a verified legal determination — a "
+        "regulation may also be constrained by provisions beyond the one cited in its own gildistaka clause."
+    )
+
+
+class RegulationSearchHit(BaseModel):
+    official_identifier: str
+    title: str
+    published_date: str | None = None
+    ministry: str | None = None
+
+
+class RegulationSearchResult(BaseModel):
+    query: str
+    total_items: int
+    page: int
+    hits: list[RegulationSearchHit]
+    warning: str = (
+        "Free-text search over the official reglugerð register. Use get_regulation for the authoritative record. "
+        "Searching a law citation (e.g. 'nr. 90/2018') surfaces regulations whose text mentions it — a practical "
+        "but non-exhaustive way to find regulations issued under a given law; it is not a verified reverse index."
+    )
+
+
+class BillDocument(BaseModel):
+    document_number: int
+    document_type: str
+    distributed_at: str | None = None
+    html_url: str | None = None
+    pdf_url: str | None = None
+
+
+class RelatedMatter(BaseModel):
+    thing: int
+    matter_number: int
+    title: str
+
+
+class BillResult(BaseModel):
+    thing: int
+    matter_number: int
+    matter_class: str
+    title: str
+    matter_type: str | None = None
+    status: str | None = None
+    subject_categories: list[str] = Field(default_factory=list)
+    rapporteurs: list[str] = Field(default_factory=list)
+    related_matters: list[RelatedMatter] = Field(default_factory=list)
+    documents: list[BillDocument] = Field(default_factory=list)
+    provenance: Provenance
+    status_note: str = (
+        "Official Alþingi open-XML parliamentary matter record. 'documents' lists the parliamentary paper trail "
+        "(e.g. stjórnarfrumvarp/nefndarálit/breytingartillaga). The bill's greinargerð (in the first document, "
+        "usually 'stjórnarfrumvarp' or 'þingmannafrumvarp') is the closest public travaux préparatoires evidence "
+        "for legislative intent — it is not binding legal text, and only 'status' shows whether the matter became law."
+    )

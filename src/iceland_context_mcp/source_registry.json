@@ -22,7 +22,7 @@
     "authority_class": "C",
     "authority_label": "Official first-instance court judgment",
     "base_url": "https://www.heradsdomstolar.is/",
-    "notes": "Rulings from ~2015+ across 8 district courts. RSS feeds and PDF/case listing endpoints are usable without JS; robots.txt disallows /domar*, so retrieval should stay on RSS and listing/pagination routes rather than crawling ruling pages directly."
+    "notes": "The old per-court sites (heradsdomstolar.is/landsrettur.is/haestirettur.is) now 301-redirect into a unified island.is verdict search covering all courts (island.is/domar), backed by a public GraphQL endpoint (island.is/api/graphql, webVerdicts/webVerdictById queries, a 'laws' filter included) — simpler than the three-site scrape this entry originally assumed. Full text often comes back as a base64 PDF rather than plain text, so a PDF-text step is still needed. Not yet wired to a tool; verify current robots.txt before building against it."
   },
   "landsrettur": {
     "name": "Landsréttur (Court of Appeals)",
@@ -30,7 +30,7 @@
     "authority_class": "C",
     "authority_label": "Official appellate court judgment",
     "base_url": "https://www.landsrettur.is/",
-    "notes": "Rulings from 2018+. Search results render client-side; listing/pagination endpoints work without JS. robots.txt disallows /domar*, so avoid direct crawling of ruling pages."
+    "notes": "See heradsdomstolar entry — now served through the same unified island.is/domar verdict search and GraphQL API, not a separate site."
   },
   "haestirettur": {
     "name": "Hæstiréttur (Supreme Court)",
@@ -38,7 +38,16 @@
     "authority_class": "C",
     "authority_label": "Official supreme court judgment — highest domestic precedent",
     "base_url": "https://www.haestirettur.is/",
-    "notes": "Rulings from 1999+. Listing/pagination endpoints work without JS. robots.txt disallows /domar*, so avoid direct crawling of ruling pages."
+    "notes": "See heradsdomstolar entry — now served through the same unified island.is/domar verdict search and GraphQL API, not a separate site."
+  },
+  "reglugerdasafn": {
+    "name": "Reglugerðasafn (island.is regulation register)",
+    "publisher": "Dómsmálaráðuneyti / Stafrænt Ísland",
+    "authority_class": "A2-REG",
+    "authority_label": "Official consolidated regulation text — subordinate to its enabling statute",
+    "base_url": "https://island.is/reglugerdir",
+    "machine_source": "https://api.reglugerd.is/api/v1/",
+    "notes": "Public, unauthenticated JSON REST API (no HTML scraping needed): /regulation/{nnnn-yyyy}/{current|original}/ returns full text, ministry, dates, amendment history and effects; /search does free-text lookup. A regulation only has legal effect within the bounds of the statute (lög) that authorizes it — its 'law_basis' clause is the regulation's own claim of authority, extracted by this PoC via pattern match, not a verified structured field. Regulations from before the register's digitization return a stub pointing at a legacy scan (www.reglugerd.is/reglugerdir/allar/nr/{id}) instead of structured text."
   },
   "ees_gagnagrunnur": {
     "name": "EES-gagnagrunnur",
