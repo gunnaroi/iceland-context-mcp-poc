@@ -14,7 +14,31 @@
     "authority_class": "B",
     "authority_label": "Official parliamentary material",
     "base_url": "https://www.althingi.is/altext/xml/",
-    "notes": "Official open XML. Alþingi warns that most exports lack a formal schema, may change without notice, and normally update daily."
+    "notes": "Official open XML: bills/matters, committee stages, speeches, votes. Alþingi warns that most exports lack a formal schema, may change without notice, and normally update daily. Requires a non-default User-Agent (default httpx UA gets 403'd) and mixed D.M.YYYY/ISO date formats depending on endpoint; parse responses as bytes, not decoded text."
+  },
+  "heradsdomstolar": {
+    "name": "Héraðsdómstólar (District Courts)",
+    "publisher": "Dómstólasýslan / Icelandic district courts",
+    "authority_class": "C",
+    "authority_label": "Official first-instance court judgment",
+    "base_url": "https://www.heradsdomstolar.is/",
+    "notes": "Rulings from ~2015+ across 8 district courts. RSS feeds and PDF/case listing endpoints are usable without JS; robots.txt disallows /domar*, so retrieval should stay on RSS and listing/pagination routes rather than crawling ruling pages directly."
+  },
+  "landsrettur": {
+    "name": "Landsréttur (Court of Appeals)",
+    "publisher": "Landsréttur",
+    "authority_class": "C",
+    "authority_label": "Official appellate court judgment",
+    "base_url": "https://www.landsrettur.is/",
+    "notes": "Rulings from 2018+. Search results render client-side; listing/pagination endpoints work without JS. robots.txt disallows /domar*, so avoid direct crawling of ruling pages."
+  },
+  "haestirettur": {
+    "name": "Hæstiréttur (Supreme Court)",
+    "publisher": "Hæstiréttur Íslands",
+    "authority_class": "C",
+    "authority_label": "Official supreme court judgment — highest domestic precedent",
+    "base_url": "https://www.haestirettur.is/",
+    "notes": "Rulings from 1999+. Listing/pagination endpoints work without JS. robots.txt disallows /domar*, so avoid direct crawling of ruling pages."
   },
   "ees_gagnagrunnur": {
     "name": "EES-gagnagrunnur",
