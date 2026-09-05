@@ -40,7 +40,7 @@ dashboard, no Playwright/JS rendering. Implemented so far (`context://iceland-da
 | Tool | Covers |
 |---|---|
 | `get_geodata(source_key, layer, ...)` | `umferd` (traffic counters), `fiskistofa` (fishing closures), `ust-gis` (contaminated land), `lmi` (national topographic/admin geodata), `natt` (Náttúrufræðistofnun vector layers) — one generic WFS client for all five |
-| `get_hagstofa_table(table_path, filters)` | `hagstofan` (any PX-Web table) and `income-distribution` (TEK01001 is just another table path) |
+| `get_hagstofa_table(table_path, filters)` / `browse_hagstofa_tables(path)` | `hagstofan` (any PX-Web table, discoverable by walking the folder catalog) and `income-distribution` (TEK01001 is just another table path) |
 | `get_vehicle(search)` | `car` — exact plate/VIN lookup |
 | `get_eurostat_series(dataset, filters)` | `eurostat` — EU/euro-area comparison series |
 | `get_weather_observations` / `get_earthquakes` | `vedur` |

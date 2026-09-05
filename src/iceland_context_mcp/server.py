@@ -31,6 +31,7 @@ from .open_data import (
     EurostatSeriesResult,
     FxRateResult,
     GeoDataResult,
+    HagstofaBrowseResult,
     InvoiceSearchResult,
     NearbyCasesResult,
     OrgSearchResult,
@@ -42,6 +43,7 @@ from .open_data import (
     TenderSearchResult,
     VehicleResult,
     WeatherObservationsResult,
+    browse_hagstofa,
     get_air_quality,
     get_bond,
     get_earthquakes,
@@ -367,6 +369,17 @@ async def get_hagstofa_table_tool(table_path: str, filters: dict[str, list[str]]
     median codes) before using them. Unrelated to this PoC's legal/EEA tools; no authority-class/provenance.
     """
     return await get_hagstofa_table(table_path, filters)
+
+
+@mcp.tool()
+async def browse_hagstofa_tables(path: str = "") -> HagstofaBrowseResult:
+    """Browse Hagstofa Íslands' PX-Web table catalog to discover a table path for get_hagstofa_table.
+
+    Call with no path for the top-level subject areas, then pass a folder's `full_path` back in to descend
+    (e.g. 'Efnahagur', then 'Efnahagur/thjodhagsreikningar', ...) until entry_type='table' entries appear —
+    their `full_path` is what get_hagstofa_table expects. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await browse_hagstofa(path)
 
 
 @mcp.tool()

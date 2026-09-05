@@ -177,6 +177,46 @@ async def get_hagstofa_table(table_path: str, filters: dict[str, list[str]] | No
     )
 
 
+class HagstofaBrowseEntry(BaseModel):
+    id: str
+    entry_type: str
+    title: str
+    updated: str | None = None
+    full_path: str
+
+
+class HagstofaBrowseResult(BaseModel):
+    path: str
+    entries: list[HagstofaBrowseEntry]
+    source_url: str
+    retrieved_at: str
+    note: str = (
+        "entry_type='folder' can be browsed further by passing its full_path back into this tool. "
+        "entry_type='table' entries' full_path can be passed directly to get_hagstofa_table."
+    )
+
+
+async def browse_hagstofa(path: str = "") -> HagstofaBrowseResult:
+    path = path.strip("/")
+    url = f"{HAGSTOFA_BASE}{path}/" if path else HAGSTOFA_BASE
+    data = await _get_json(url)
+    entries = []
+    for item in data:
+        # The API root uses {"dbid", "text"} with no "type" (always a folder);
+        # every deeper level uses {"id", "type": "l"|"t", "text", ["updated"]}.
+        item_id = item.get("id") or item["dbid"]
+        entries.append(
+            HagstofaBrowseEntry(
+                id=item_id,
+                entry_type="folder" if item.get("type", "l") == "l" else "table",
+                title=item.get("text", ""),
+                updated=item.get("updated"),
+                full_path=f"{path}/{item_id}" if path else item_id,
+            )
+        )
+    return HagstofaBrowseResult(path=path, entries=entries, source_url=url, retrieved_at=utc_now())
+
+
 # ---------------------------------------------------------------------------
 # island.is vehicle lookup (car)
 # ---------------------------------------------------------------------------
