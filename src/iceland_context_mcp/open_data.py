@@ -151,6 +151,15 @@ class StatTableResult(BaseModel):
     note: str = "Hagstofa Íslands PX-Web table, fetched as CSV and parsed. Values are as published — check the table's own unit/scale conventions (e.g. thousands of ISK) before using them."
 
 
+def _decode_hagstofa_csv(content: bytes, declared_encoding: str | None) -> str:
+    # The declared Content-Type charset is unreliable per-table (some tables send a
+    # UTF-8 BOM body but declare charset=Windows-1252 in the header) — a BOM is a
+    # hard signal of real encoding, so check for it before trusting the header.
+    if content.startswith(b"\xef\xbb\xbf"):
+        return content.decode("utf-8-sig")
+    return content.decode(declared_encoding or "utf-8-sig")
+
+
 async def get_hagstofa_table(table_path: str, filters: dict[str, list[str]] | None = None) -> StatTableResult:
     table_path = table_path.strip("/")
     url = f"{HAGSTOFA_BASE}{table_path}"
@@ -160,9 +169,7 @@ async def get_hagstofa_table(table_path: str, filters: dict[str, list[str]] | No
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
         response = await client.post(url, json=payload)
         response.raise_for_status()
-        # The declared charset varies by table (seen: UTF-8 with BOM, Windows-1252) —
-        # trust the response's own content-type rather than assuming one encoding.
-        text = response.content.decode(response.encoding or "utf-8-sig")
+        text = _decode_hagstofa_csv(response.content, response.encoding)
     reader = csv.reader(io.StringIO(text))
     rows = [row for row in reader if row]
     header, body = (rows[0], rows[1:]) if rows else ([], [])

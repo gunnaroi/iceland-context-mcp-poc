@@ -362,7 +362,15 @@ async def get_geodata_tool(
 
 @mcp.tool()
 async def get_hagstofa_table_tool(table_path: str, filters: dict[str, list[str]] | None = None) -> StatTableResult:
-    """Fetch an Hagstofa Íslands (Statistics Iceland) PX-Web table by its path (e.g. 'Efnahagur/.../THJ01103.px').
+    """Fetch an Hagstofa Íslands (Statistics Iceland) PX-Web table by its exact path.
+
+    table_path must be a full, exact path with every folder segment present — there is no shorthand or
+    fuzzy matching, and a guessed or partial path (including a bare filename like 'VIS01000.px' with the
+    folders left off) will fail. Do not guess: if you don't already have a verified full path, call
+    browse_hagstofa_tables first and use the full_path it returns for the table you want.
+
+    Verified working example (CPI / vísitala neysluverðs, monthly since 1988):
+    table_path='Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px' with no filters returns the whole series.
 
     Optional `filters` maps a PX-Web dimension code to allowed values to narrow the query server-side.
     Values are as published — check the table's own metadata for units/scale (e.g. thousands of ISK, mean vs.
@@ -375,9 +383,15 @@ async def get_hagstofa_table_tool(table_path: str, filters: dict[str, list[str]]
 async def browse_hagstofa_tables(path: str = "") -> HagstofaBrowseResult:
     """Browse Hagstofa Íslands' PX-Web table catalog to discover a table path for get_hagstofa_table.
 
-    Call with no path for the top-level subject areas, then pass a folder's `full_path` back in to descend
-    (e.g. 'Efnahagur', then 'Efnahagur/thjodhagsreikningar', ...) until entry_type='table' entries appear —
-    their `full_path` is what get_hagstofa_table expects. Unrelated to this PoC's legal/EEA tools.
+    Always start here rather than guessing a path for get_hagstofa_table_tool — folder names are Icelandic
+    abbreviations that are not derivable from a table's title or code. Call with no path for the top-level
+    subject areas (folders), then repeatedly pass a returned folder entry's `full_path` back into this same
+    tool to descend one level at a time — do not skip levels or invent intermediate segments — until
+    entry_type='table' entries appear. Pass that table entry's `full_path` verbatim (unmodified) as
+    `table_path` to get_hagstofa_table_tool. Example real descent for CPI: '' -> 'Efnahagur' ->
+    'Efnahagur/visitolur' -> 'Efnahagur/visitolur/1_vnv' -> 'Efnahagur/visitolur/1_vnv/1_vnv', which lists
+    the table 'VIS01000.px' whose full_path 'Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px' is what you pass
+    on. Unrelated to this PoC's legal/EEA tools.
     """
     return await browse_hagstofa(path)
 

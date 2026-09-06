@@ -297,6 +297,7 @@ Keep the MCP tool surface stable while swapping brittle HTML adapters for suppor
 - `search_court_rulings`: the `court` filter is confirmed reliable only for `"Hæstiréttur"` — `"Landsréttur"` or a héraðsdómur name silently returns zero results even though those exact strings appear in the returned data. Filter by court client-side for anything but Hæstiréttur.
 - `get_court_ruling`: full text is structured `richText` for some rulings (mainly recent Hæstiréttur) and a PDF (extracted via `pdfplumber`) for others — check `text_source` on the result.
 - `search_stjornartidindi`: the upstream GraphQL resolver returns a 500 error if `dateFrom`/`dateTo` are sent as explicit `null` rather than omitted — this tool omits the keys entirely when unset.
+- `get_hagstofa_table`: PX-Web folder paths are exact Icelandic abbreviations with no fuzzy matching — a guessed or partial path (including a bare table filename with the folders left off) fails outright, so callers must discover the path via `browse_hagstofa_tables` rather than guessing from a table's title or code. Separately, some tables' CSV response declares `charset=Windows-1252` in `Content-Type` while the body is actually UTF-8 with a BOM — this tool checks for the BOM before trusting the declared charset.
 
 ## License
 

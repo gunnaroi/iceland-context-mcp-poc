@@ -1,5 +1,5 @@
 from iceland_context_mcp.data_skills import attribution_header, get_data_skill, list_data_skills
-from iceland_context_mcp.open_data import open_data_registry_record, open_data_registry_records
+from iceland_context_mcp.open_data import _decode_hagstofa_csv, open_data_registry_record, open_data_registry_records
 from iceland_context_mcp.search import _fts_query
 from iceland_context_mcp.sources import (
     _clean_text,
@@ -160,3 +160,16 @@ def test_eur_lex_rejects_unsupported_language():
         assert False, "expected ValueError"
     except ValueError as e:
         assert "Unsupported language" in str(e)
+
+
+def test_decode_hagstofa_csv_trusts_bom_over_mislabeled_declared_encoding():
+    # Some Hagstofa PX-Web tables send a genuine UTF-8 (with BOM) body while declaring
+    # charset=Windows-1252 in Content-Type — decoding with the declared charset raises
+    # UnicodeDecodeError on Icelandic characters. The BOM must win.
+    content = "Mánuður,Vísitala".encode("utf-8-sig")
+    assert _decode_hagstofa_csv(content, "windows-1252") == "Mánuður,Vísitala"
+
+
+def test_decode_hagstofa_csv_uses_declared_encoding_without_bom():
+    content = "Mánuður,Vísitala".encode("windows-1252")
+    assert _decode_hagstofa_csv(content, "windows-1252") == "Mánuður,Vísitala"
