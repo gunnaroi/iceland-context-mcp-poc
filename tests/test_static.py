@@ -162,6 +162,23 @@ def test_eur_lex_rejects_unsupported_language():
         assert "Unsupported language" in str(e)
 
 
+def test_hagstofa_bad_path_raises_actionable_tool_error():
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from iceland_context_mcp.open_data import get_hagstofa_table
+
+    async def run():
+        await get_hagstofa_table("THJ01103.px")
+
+    import asyncio
+
+    try:
+        asyncio.run(run())
+        assert False, "expected ToolError"
+    except ToolError as e:
+        assert "browse_hagstofa_tables" in str(e)
+
+
 def test_decode_hagstofa_csv_trusts_bom_over_mislabeled_declared_encoding():
     # Some Hagstofa PX-Web tables send a genuine UTF-8 (with BOM) body while declaring
     # charset=Windows-1252 in Content-Type — decoding with the declared charset raises

@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 OPEN_DATA_REGISTRY_PATH = Path(__file__).with_name("open_data_registry.json")
@@ -168,6 +169,18 @@ async def get_hagstofa_table(table_path: str, filters: dict[str, list[str]] | No
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
         response = await client.post(url, json=payload)
+        if response.status_code == 400:
+            # PX-Web returns a bare 400 with no body for any path that doesn't exist
+            # exactly as given (wrong segment, missing segment, bare filename, etc.) —
+            # there's no fuzzy matching, so a guessed path can't be salvaged. Surface an
+            # actionable message instead of letting this become an opaque tool crash.
+            raise ToolError(
+                f"No PX-Web table at path '{table_path}'. This path must match a real "
+                "folder/table exactly — there is no fuzzy matching, and a guessed or "
+                "partial path always fails this way. Call browse_hagstofa_tables (with "
+                "no path for top-level areas, then descending one folder at a time) and "
+                "pass its returned full_path for the table you want, unmodified."
+            )
         response.raise_for_status()
         text = _decode_hagstofa_csv(response.content, response.encoding)
     reader = csv.reader(io.StringIO(text))
