@@ -12,6 +12,7 @@ in ./skills/) — see THIRD_PARTY_NOTICES.md.
 
 from __future__ import annotations
 
+import base64
 import csv
 import io
 import json
@@ -784,4 +785,501 @@ async def get_fx_rate(date: str = "latest", base: str = "EUR", symbols: str | No
     data = await _get_json(url, params=params)
     return FxRateResult(
         date=data.get("date", date), base=data.get("base", base), rates=data.get("rates", {}), source_url=url, retrieved_at=utc_now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# island.is registered web-service catalogue (Straumur/X-Road reference index)
+# ---------------------------------------------------------------------------
+#
+# Ported from a separate PoC, island-is-mcp (same author) — see that project's
+# docs/discovery-notes.md for the original discovery notes this section is
+# based on. Re-verified live before porting: the catalogue's own `query` input
+# does server-side title/owner filtering (confirmed by testing, not assumed
+# from the original project, which had built a local crawl+cache instead of
+# relying on this) — so unlike that project, no local index/cache is needed
+# here; every call is live, consistent with this codebase's style elsewhere.
+#
+# CRITICAL: this catalogue is REFERENCE METADATA ONLY. It lists which web
+# services are registered — owner, access path, declared data sensitivity,
+# and (when published) OpenAPI documentation — but every one of the ~120
+# services listed requires X-Road membership to actually call, including
+# ones tagged APIGW (verified: all APIGW-tagged services also carry XROAD;
+# none are self-serve). These tools can never return real registry data
+# (þjóðskrá, ökutækjaskrá, fasteignaskrá, health records, etc.) and must
+# never be presented as if they could.
+
+MAX_TEXT_CHARS_CATALOGUE = 50_000
+
+CATALOGUE_QUERY = """
+query GetApiCatalogue($input: GetApiCatalogueInput!) {
+  getApiCatalogue(input: $input) {
+    services {
+      id
+      title
+      owner
+      pricing
+      type
+      access
+      data
+      environments { environment }
+    }
+    pageInfo { nextCursor }
+  }
+}
+"""
+
+OPENAPI_QUERY = """
+query GetOpenApi($input: GetOpenApiInput!) {
+  getOpenApi(input: $input) { spec }
+}
+"""
+
+
+class ApiCatalogueService(BaseModel):
+    service_id: str
+    title: str
+    owner: str
+    pricing: list[str]
+    type: list[str]
+    access: list[str]
+    data: list[str]
+
+
+class ApiCatalogueSearchResult(BaseModel):
+    query: str
+    returned: int
+    services: list[ApiCatalogueService]
+    note: str = (
+        "REFERENCE METADATA ONLY. This lists registered web services on Straumur/api.island.is — it never "
+        "returns real registry data (þjóðskrá, ökutækjaskrá, fasteignaskrá, health records, etc.). Every "
+        "listed service, including ones tagged 'APIGW', requires direct X-Road membership with the data "
+        "owner to actually call — there is no self-serve path. Use get_webservice_details for one service's "
+        "full metadata, list_service_endpoints/get_service_openapi_spec for its documented operations."
+    )
+
+
+class XRoadIdentity(BaseModel):
+    instance: str
+    member_class: str
+    member_code: str
+    subsystem_code: str
+    service_code: str
+
+
+def _decode_service_id(service_id: str) -> XRoadIdentity | None:
+    """Decode getApiCatalogue's `id` into the X-Road identity getOpenApi needs.
+
+    `id` is base64 of "{instance}_{memberClass}_{memberCode}_{subsystemCode}_{serviceCode}"
+    (verified against all ~120 live entries when this was first built). Assumes
+    subsystemCode never contains an underscore (observed: it uses hyphens, e.g.
+    "EmbaettiLandlaeknis-Protected") while serviceCode sometimes does (e.g.
+    "TBRInfo_v1") — so the first four underscore-separated parts are taken as
+    instance/memberClass/memberCode/subsystemCode and everything after is
+    rejoined as serviceCode. Returns None rather than guessing wrong if decoding
+    fails outright.
+    """
+    padded = service_id + "=" * (-len(service_id) % 4)
+    try:
+        decoded = base64.b64decode(padded).decode("utf-8")
+    except Exception:
+        return None
+    parts = decoded.split("_")
+    if len(parts) < 5:
+        return None
+    instance, member_class, member_code, subsystem_code = parts[:4]
+    return XRoadIdentity(
+        instance=instance,
+        member_class=member_class,
+        member_code=member_code,
+        subsystem_code=subsystem_code,
+        service_code="_".join(parts[4:]),
+    )
+
+
+async def _fetch_catalogue_page(query: str, cursor: str | None, limit: int) -> dict:
+    variables = {
+        "input": {
+            "cursor": cursor,
+            "limit": limit,
+            "query": query,
+            "pricing": [],
+            "data": [],
+            "type": [],
+            "access": [],
+        }
+    }
+    data = await _post_json(ISLAND_IS_GRAPHQL, {"query": CATALOGUE_QUERY, "variables": variables})
+    if "errors" in data:
+        raise ValueError(f"island.is GraphQL error: {data['errors']}")
+    return data["data"]["getApiCatalogue"]
+
+
+def _to_service(raw: dict) -> ApiCatalogueService:
+    return ApiCatalogueService(
+        service_id=raw["id"],
+        title=raw["title"],
+        owner=raw["owner"],
+        pricing=raw.get("pricing", []),
+        type=raw.get("type", []),
+        access=raw.get("access", []),
+        data=raw.get("data", []),
+    )
+
+
+async def search_webservices(query: str = "", limit: int = 20) -> ApiCatalogueSearchResult:
+    limit = max(1, min(limit, 100))
+    result = await _fetch_catalogue_page(query, cursor=None, limit=limit)
+    services = [_to_service(s) for s in result["services"]]
+    return ApiCatalogueSearchResult(query=query, returned=len(services), services=services)
+
+
+class WebserviceDetail(ApiCatalogueService):
+    environments: list[str]
+    openapi_available: bool = False
+    description: str | None = None
+    contact: dict | None = None
+    documentation_url: str | None = None
+    xroad_identity: XRoadIdentity | None = None
+    note: str = (
+        "REFERENCE METADATA ONLY — see ApiCatalogueSearchResult.note. This is never real registry data."
+    )
+
+
+async def get_webservice_details(service_id: str) -> WebserviceDetail:
+    # No by-id catalogue query exists upstream (confirmed via GraphQL's own "did
+    # you mean" validation error) — one page at limit=500 covers the whole
+    # catalogue (~120 services, confirmed live) in a single round trip, so a
+    # local scan is cheap and needs no persistent cache.
+    result = await _fetch_catalogue_page("", cursor=None, limit=500)
+    raw = next((s for s in result["services"] if s["id"] == service_id), None)
+    if raw is None:
+        raise ToolError(
+            f"No service found with service_id={service_id!r}. Call search_webservices to find valid ids."
+        )
+
+    environments = [e["environment"] for e in raw.get("environments", [])]
+    identity = _decode_service_id(service_id)
+    detail = WebserviceDetail(**_to_service(raw).model_dump(), environments=environments, xroad_identity=identity)
+
+    if identity is None:
+        return detail
+
+    spec_data = await _post_json(
+        ISLAND_IS_GRAPHQL,
+        {
+            "query": OPENAPI_QUERY,
+            "variables": {
+                "input": {
+                    "instance": identity.instance,
+                    "memberCode": identity.member_code,
+                    "memberClass": identity.member_class,
+                    "subsystemCode": identity.subsystem_code,
+                    "serviceCode": identity.service_code,
+                }
+            },
+        },
+    )
+    spec_text = spec_data.get("data", {}).get("getOpenApi", {}).get("spec") or ""
+    if not spec_text:
+        return detail
+    try:
+        spec = json.loads(spec_text)
+    except json.JSONDecodeError:
+        return detail
+    info = spec.get("info") if isinstance(spec, dict) else None
+    info = info if isinstance(info, dict) else {}
+    contact = info.get("contact")
+    x_links = info.get("x-links")
+    detail.openapi_available = True
+    detail.description = info.get("description") if isinstance(info.get("description"), str) else None
+    detail.contact = contact if isinstance(contact, dict) else None
+    detail.documentation_url = x_links.get("documentation") if isinstance(x_links, dict) else None
+    return detail
+
+
+class ServiceEndpoint(BaseModel):
+    path: str
+    method: str
+    summary: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class ServiceEndpointsResult(BaseModel):
+    service_id: str
+    title: str
+    endpoints: list[ServiceEndpoint]
+    note: str = (
+        "Documentation of what the service's own published OpenAPI spec says it can do — not a tool that "
+        "calls anything. Actually invoking any of these operations requires direct X-Road access to the "
+        "data owner; this server has no such access and never will."
+    )
+
+
+def _extract_endpoints(spec: dict) -> list[ServiceEndpoint]:
+    endpoints: list[ServiceEndpoint] = []
+    paths = spec.get("paths")
+    if not isinstance(paths, dict):
+        return endpoints
+    for path, operations in paths.items():
+        if not isinstance(operations, dict):
+            continue
+        for method, op in operations.items():
+            if method.lower() not in ("get", "post", "put", "patch", "delete") or not isinstance(op, dict):
+                continue
+            endpoints.append(
+                ServiceEndpoint(
+                    path=path,
+                    method=method.upper(),
+                    summary=op.get("summary") if isinstance(op.get("summary"), str) else None,
+                    tags=op.get("tags") if isinstance(op.get("tags"), list) else [],
+                )
+            )
+    return endpoints
+
+
+async def _get_service_spec(service_id: str) -> tuple[str, dict | None]:
+    """Returns (title, spec-or-None). Shared by list_service_endpoints/get_service_openapi_spec."""
+    detail = await get_webservice_details(service_id)
+    if not detail.openapi_available:
+        return detail.title, None
+    identity = detail.xroad_identity
+    spec_data = await _post_json(
+        ISLAND_IS_GRAPHQL,
+        {
+            "query": OPENAPI_QUERY,
+            "variables": {
+                "input": {
+                    "instance": identity.instance,
+                    "memberCode": identity.member_code,
+                    "memberClass": identity.member_class,
+                    "subsystemCode": identity.subsystem_code,
+                    "serviceCode": identity.service_code,
+                }
+            },
+        },
+    )
+    spec_text = spec_data.get("data", {}).get("getOpenApi", {}).get("spec") or ""
+    try:
+        spec = json.loads(spec_text) if spec_text else None
+    except json.JSONDecodeError:
+        spec = None
+    return detail.title, spec if isinstance(spec, dict) else None
+
+
+async def list_service_endpoints(service_id: str) -> ServiceEndpointsResult:
+    title, spec = await _get_service_spec(service_id)
+    endpoints = _extract_endpoints(spec) if spec else []
+    return ServiceEndpointsResult(service_id=service_id, title=title, endpoints=endpoints)
+
+
+class ServiceOpenApiSpecResult(BaseModel):
+    service_id: str
+    title: str
+    spec: dict | None
+    spec_size_chars: int | None = None
+    note: str = "Documentation only, same caveat as ServiceEndpointsResult.note."
+
+
+async def get_service_openapi_spec(service_id: str) -> ServiceOpenApiSpecResult:
+    title, spec = await _get_service_spec(service_id)
+    if spec is None:
+        return ServiceOpenApiSpecResult(service_id=service_id, title=title, spec=None)
+    spec_size = len(json.dumps(spec, ensure_ascii=False))
+    if spec_size > MAX_TEXT_CHARS_CATALOGUE:
+        return ServiceOpenApiSpecResult(
+            service_id=service_id,
+            title=title,
+            spec=None,
+            spec_size_chars=spec_size,
+            note=(
+                f"Spec too large to return in full ({spec_size} chars) — use list_service_endpoints for a "
+                "compact summary of its operations instead."
+            ),
+        )
+    return ServiceOpenApiSpecResult(service_id=service_id, title=title, spec=spec, spec_size_chars=spec_size)
+
+
+# ---------------------------------------------------------------------------
+# island.is public web content (guides, life events, organization pages)
+# ---------------------------------------------------------------------------
+#
+# Also ported from island-is-mcp — see that project's docs/content-connector-
+# notes.md. Unlike the legal/EEA sources in sources.py, this content is
+# editorial/informational (how-to guides, procedures), not law — no
+# authority-class applies, same as the rest of this module. The queries
+# (getSingleArticle, searchResults with SearcherInput) are not visible in
+# browser network traffic (the pages are server-rendered) — they were found
+# by probing Apollo Server's schema-validation error messages ("did you mean
+# X?"), which remain informative even though introspection itself is disabled
+# server-side. Re-verified live before porting.
+
+CONTENT_SEARCH_QUERY = """
+query GetSearchResults($query: SearcherInput!) {
+  searchResults(query: $query) {
+    total
+    items {
+      __typename
+      ... on Article { id title articleSlug: slug intro }
+      ... on LifeEventPage { id title lifeEventSlug: slug intro }
+      ... on Manual { id title manualSlug: slug }
+      ... on OrganizationSubpage { id title orgSubSlug: slug }
+    }
+  }
+}
+"""
+
+GET_ARTICLE_QUERY = """
+query GetSingleArticle($input: GetSingleArticleInput!) {
+  getSingleArticle(input: $input) {
+    id
+    title
+    slug
+    intro
+    contentLastReviewed
+    body {
+      __typename
+      ... on Html { document }
+      ... on ProcessEntry { id processTitle buttonText }
+    }
+  }
+}
+"""
+
+CONTENT_SEARCH_TYPES = ["webArticle", "webLifeEventPage", "webManual", "webOrganizationSubpage"]
+CONTENT_TYPE_LABELS = {
+    "Article": "article",
+    "LifeEventPage": "life event",
+    "Manual": "manual",
+    "OrganizationSubpage": "organization subpage",
+}
+CONTENT_SLUG_FIELDS = {
+    "Article": "articleSlug",
+    "LifeEventPage": "lifeEventSlug",
+    "Manual": "manualSlug",
+    "OrganizationSubpage": "orgSubSlug",
+}
+MAX_TEXT_CHARS_CONTENT = 50_000
+
+
+class ContentSearchHit(BaseModel):
+    id: str
+    type: str
+    type_label: str
+    title: str
+    slug: str | None = None
+    intro: str | None = None
+    full_text_available: bool
+
+
+class ContentSearchResult(BaseModel):
+    query: str
+    total_matches: int
+    returned: int
+    items: list[ContentSearchHit]
+    note: str = (
+        "Public island.is guidance content (how-to articles, life events, organization pages), not law and "
+        "not registry data. full_text_available=true (type='Article' only, for now) means get_island_article "
+        "can retrieve the full body; other types currently surface only title/intro here."
+    )
+
+
+async def search_island_content(query: str, lang: str = "is", limit: int = 10) -> ContentSearchResult:
+    limit = max(1, min(limit, 30))
+    variables = {"query": {"queryString": query, "language": lang, "types": CONTENT_SEARCH_TYPES}}
+    data = await _post_json(ISLAND_IS_GRAPHQL, {"query": CONTENT_SEARCH_QUERY, "variables": variables})
+    if "errors" in data:
+        raise ValueError(f"island.is GraphQL error: {data['errors']}")
+    result = data["data"]["searchResults"]
+    items = []
+    for item in result["items"][:limit]:
+        type_name = item["__typename"]
+        slug_field = CONTENT_SLUG_FIELDS.get(type_name)
+        items.append(
+            ContentSearchHit(
+                id=item["id"],
+                type=type_name,
+                type_label=CONTENT_TYPE_LABELS.get(type_name, type_name),
+                title=item["title"],
+                slug=item.get(slug_field) if slug_field else None,
+                intro=item.get("intro"),
+                full_text_available=type_name == "Article",
+            )
+        )
+    return ContentSearchResult(query=query, total_matches=result["total"], returned=len(items), items=items)
+
+
+def _richtext_to_markdown(node: dict) -> str:
+    node_type = node.get("nodeType")
+    if node_type == "text":
+        value = node.get("value", "")
+        for mark in node.get("marks", []):
+            wrapper = {"bold": "**", "italic": "_", "code": "`"}.get(mark.get("type"))
+            if wrapper:
+                value = f"{wrapper}{value}{wrapper}"
+        return value
+    children = "".join(_richtext_to_markdown(c) for c in node.get("content", []))
+    if node_type == "hyperlink":
+        uri = (node.get("data") or {}).get("uri", "")
+        return f"[{children}]({uri})" if uri else children
+    if node_type == "paragraph":
+        return children + "\n\n"
+    if node_type and node_type.startswith("heading-"):
+        level = node_type.split("-")[-1]
+        hashes = "#" * int(level) if level.isdigit() else "###"
+        return f"{hashes} {children}\n\n"
+    if node_type == "list-item":
+        return f"- {children.strip()}\n"
+    if node_type in ("unordered-list", "ordered-list"):
+        return children + "\n"
+    if node_type == "hr":
+        return "---\n\n"
+    return children
+
+
+class ArticleResult(BaseModel):
+    title: str
+    slug: str
+    intro: str | None = None
+    content_last_reviewed: str | None = None
+    body_markdown: str
+    body_truncated: bool = False
+    source_url: str
+    note: str = "Public island.is guidance content — editorial/informational, not law and not registry data."
+
+
+async def get_island_article(slug: str, lang: str = "is") -> ArticleResult:
+    variables = {"input": {"slug": slug, "lang": lang}}
+    data = await _post_json(ISLAND_IS_GRAPHQL, {"query": GET_ARTICLE_QUERY, "variables": variables})
+    if "errors" in data:
+        raise ValueError(f"island.is GraphQL error: {data['errors']}")
+    article = data["data"]["getSingleArticle"]
+    if article is None:
+        raise ToolError(f"No article found with slug={slug!r}.")
+
+    parts = []
+    for block in article.get("body", []):
+        if block["__typename"] == "Html":
+            text = _richtext_to_markdown(block.get("document") or {}).strip()
+            if text:
+                parts.append(text)
+        elif block["__typename"] == "ProcessEntry":
+            title = block.get("processTitle")
+            button = block.get("buttonText")
+            if title or button:
+                parts.append(f"[Action: {title or ''} — {button or ''}]".strip())
+
+    body_markdown = "\n\n".join(parts)
+    truncated = len(body_markdown) > MAX_TEXT_CHARS_CONTENT
+    if truncated:
+        body_markdown = body_markdown[:MAX_TEXT_CHARS_CONTENT]
+
+    return ArticleResult(
+        title=article["title"],
+        slug=article["slug"],
+        intro=article.get("intro"),
+        content_last_reviewed=article.get("contentLastReviewed"),
+        body_markdown=body_markdown,
+        body_truncated=truncated,
+        source_url=f"https://island.is/{article['slug']}",
     )

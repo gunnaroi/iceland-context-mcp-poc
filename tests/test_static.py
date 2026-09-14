@@ -1,5 +1,11 @@
 from iceland_context_mcp.data_skills import attribution_header, get_data_skill, list_data_skills
-from iceland_context_mcp.open_data import _decode_hagstofa_csv, open_data_registry_record, open_data_registry_records
+from iceland_context_mcp.open_data import (
+    _decode_hagstofa_csv,
+    _decode_service_id,
+    _richtext_to_markdown,
+    open_data_registry_record,
+    open_data_registry_records,
+)
 from iceland_context_mcp.search import _fts_query
 from iceland_context_mcp.sources import (
     _clean_text,
@@ -190,3 +196,102 @@ def test_decode_hagstofa_csv_trusts_bom_over_mislabeled_declared_encoding():
 def test_decode_hagstofa_csv_uses_declared_encoding_without_bom():
     content = "Mánuður,Vísitala".encode("windows-1252")
     assert _decode_hagstofa_csv(content, "windows-1252") == "Mánuður,Vísitala"
+
+
+def test_decode_service_id_roundtrip():
+    # "Landlæknir API" — confirmed live in island-is-mcp's discovery-notes.md before this was ported.
+    identity = _decode_service_id(
+        "SVNfR09WXzcxMDE2OTUwMDlfRW1iYWV0dGlMYW5kbGFla25pcy1Qcm90ZWN0ZWRfbGFuZGxhZWtuaXI"
+    )
+    assert identity is not None
+    assert identity.instance == "IS"
+    assert identity.member_class == "GOV"
+    assert identity.member_code == "7101695009"
+    assert identity.subsystem_code == "EmbaettiLandlaeknis-Protected"
+    assert identity.service_code == "landlaeknir"
+
+
+def test_decode_service_id_handles_underscore_in_service_code():
+    # "Bank Info" (FJS-Public/TBRInfo_v1) — serviceCode itself contains an underscore.
+    identity = _decode_service_id("SVNfR09WXzU0MDI2OTc1MDlfRkpTLVB1YmxpY19UQlJJbmZvX3Yx")
+    assert identity is not None
+    assert identity.subsystem_code == "FJS-Public"
+    assert identity.service_code == "TBRInfo_v1"
+
+
+def test_decode_service_id_invalid_input_returns_none():
+    assert _decode_service_id("not-valid-base64!!!") is None
+
+
+def test_richtext_to_markdown_bold_and_paragraphs():
+    doc = {
+        "nodeType": "document",
+        "content": [
+            {
+                "nodeType": "paragraph",
+                "content": [
+                    {"nodeType": "text", "value": "Venjulegt ", "marks": []},
+                    {"nodeType": "text", "value": "feitletrað", "marks": [{"type": "bold"}]},
+                ],
+            }
+        ],
+    }
+    assert _richtext_to_markdown(doc).strip() == "Venjulegt **feitletrað**"
+
+
+def test_richtext_to_markdown_lists_and_links():
+    doc = {
+        "nodeType": "document",
+        "content": [
+            {
+                "nodeType": "unordered-list",
+                "content": [
+                    {
+                        "nodeType": "list-item",
+                        "content": [
+                            {
+                                "nodeType": "hyperlink",
+                                "data": {"uri": "https://example.is"},
+                                "content": [{"nodeType": "text", "value": "tengill", "marks": []}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    assert "[tengill](https://example.is)" in _richtext_to_markdown(doc)
+
+
+def test_open_data_registry_island_sources():
+    records = open_data_registry_records()
+    keys = {r.key for r in records}
+    assert {"island-catalogue", "island-content"} <= keys
+    catalogue = open_data_registry_record("island-catalogue")
+    assert catalogue.base_url == "https://island.is/api/graphql"
+
+
+def test_search_webservices_live():
+    from iceland_context_mcp.open_data import search_webservices
+
+    async def run():
+        return await search_webservices("landlæknir")
+
+    import asyncio
+
+    result = asyncio.run(run())
+    assert result.returned >= 1
+    assert any("Landlæknir" in s.title for s in result.services)
+
+
+def test_get_island_article_live():
+    from iceland_context_mcp.open_data import get_island_article
+
+    async def run():
+        return await get_island_article("saekja-um-vegabref")
+
+    import asyncio
+
+    article = asyncio.run(run())
+    assert article.title == "Sækja um vegabréf"
+    assert len(article.body_markdown) > 100
