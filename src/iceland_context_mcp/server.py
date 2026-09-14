@@ -247,11 +247,12 @@ async def get_bill_document(thing: int, document_number: int) -> BillDocumentRes
 
     Most documents (nefndarálit, breytingartillaga, smaller frumvörp) render inline HTML and come back with
     text_source='html'. Large tabular documents — fjárlög (the state budget) in particular — publish no inline
-    text and this falls back to the document's own PDF (text_source='pdf'). Fjárlög's own enacted-law PDF
-    contains the appropriation tables by málefnasvið/málaflokkur (e.g. "Menning, listir, íþrótta- og
-    æskulýðsmál") — that PDF, not the CSV mirror on a ministry website, is the canonical source for exact
-    budget figures, since fjárlög is itself legislation. PDF extraction on table-heavy pages can come out
-    garbled — a known limitation of the extraction library on some table layouts, not a data error.
+    text and this falls back to the document's own PDF (text_source='pdf'). This works for reading fjárlög's
+    own legislative text, and PDF extraction on table-heavy appropriation pages can come out garbled — a known
+    limitation of the extraction library on some table layouts, not a data error. For structured budget
+    figures (expenditure by málefnasvið/ráðuneyti/liður, year-over-year comparisons, bill vs. enacted law vs.
+    audited actual), use fjarlog-mcp (https://github.com/gunnaroi/fjarlog) instead — a separate MCP server
+    with a properly ETL'd database of ~230,000 line items across 2018-2029, not PDF text extraction.
     """
     return await fetch_bill_document(thing, document_number)
 
@@ -490,7 +491,8 @@ async def get_rikisreikningur_malefni_tool() -> RikisreikningurMalefniResult:
 
     Returns the full ~620-row table — filter client-side on malefnasvid_numer for one policy area. This is
     actuals (what was spent); for planned/enacted appropriations by the finer málaflokkur/viðfang level, use
-    get_bill_document on the relevant fjárlög þingskjal instead. Unrelated to this PoC's legal/EEA tools.
+    fjarlog-mcp (https://github.com/gunnaroi/fjarlog) instead — a separate MCP server with a properly ETL'd
+    database covering all budget stages, not just actuals. Unrelated to this PoC's legal/EEA tools.
     """
     return await get_rikisreikningur_malefni()
 

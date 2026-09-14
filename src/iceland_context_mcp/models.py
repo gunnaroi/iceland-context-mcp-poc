@@ -303,5 +303,8 @@ class BillDocumentResult(BaseModel):
         "'html'; large tabular documents — fjárlög (the state budget) in particular — publish no inline text "
         "('Smellið á PDF...') and this falls back to the document's own PDF, text_source='pdf'. PDF extraction "
         "on table-heavy pages (e.g. fjárlög's appropriation tables) can come out garbled or column-scrambled — "
-        "a known pdfplumber limitation with some table layouts, not a data error; treat such pages with care."
+        "a known pdfplumber limitation with some table layouts, not a data error; treat such pages with care. "
+        "For structured fjárlög figures (expenditure by málefnasvið/ráðuneyti/liður, year comparisons, "
+        "bill-vs-enacted-vs-actual), use fjarlog-mcp (https://github.com/gunnaroi/fjarlog) instead — a "
+        "separate MCP server with a properly ETL'd database, not PDF text extraction."
     )

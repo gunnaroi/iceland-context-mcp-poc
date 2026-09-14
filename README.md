@@ -14,7 +14,7 @@ The first version exposes:
 - `get_regulation(number, year, view)` — official reglugerð register (current or as-originally-published text), with amendment history and a best-effort extraction of the regulation's stated legal basis (enabling law);
 - `search_regulations(query)` — free-text search over the regulation register;
 - `get_bill(malnr, thing, malsflokkur)` — Alþingi parliamentary matter (bill/resolution/question) with status, subject categories and its document trail (stjórnarfrumvarp/nefndarálit/breytingartillaga/...);
-- `get_bill_document(thing, document_number)` — full text of one þingskjal from that trail (HTML normally, falling back to the document's own PDF when there's no inline text — e.g. fjárlög, the state budget, which is itself legislation and PDF-only; its enacted-law PDF is the canonical source for exact appropriation figures, not a ministry CSV mirror);
+- `get_bill_document(thing, document_number)` — full text of one þingskjal from that trail (HTML normally, falling back to the document's own PDF when there's no inline text — e.g. fjárlög, the state budget, which is itself legislation and PDF-only; useful for reading the bill's own legislative text, but for structured appropriation figures prefer [fjarlog-mcp](https://github.com/gunnaroi/fjarlog) — see "Remaining sources" below);
 - `search_court_rulings(query, court, date_from, date_to, law_citation)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight; `law_citation` filters by a curated whole-law citation tag;
 - `search_stjornartidindi(query, department, date_from, date_to)` / `get_stjornartidindi_advert(id)` — Stjórnartíðindi (the official promulgation record), via the same island.is GraphQL backend as the court/regulation tools;
 - `get_eur_lex_act(celex, language)` — official EU act text and metadata via the public CELLAR SPARQL + REST endpoints (no API key) — the EU-law side of the chain;
@@ -66,12 +66,17 @@ from LMI/Hagstofa/others), so it's covered by `get_geodata` for those. `gengi`'s
 side was left out too — the skill doc names no concrete endpoint for it, only prose; the ECB historical side
 via frankfurter.dev is what's implemented.
 
-`fjarlog` (the skill's own CSV mirror on stjornarradid.is) turned out not to be worth pursuing: that site is
-Blazor Server-rendered (the download link isn't in the plain HTML, and the filename carries a changing version
-suffix with no discoverable stable alias — confirmed live, all attempted paths either need a JS-rendered
-session or 302 ambiguously). Since fjárlög is itself legislation, `get_bill_document` reading its enacted-law
-PDF directly off althingi.is is the better source anyway — verified live, extracting real appropriation
-figures by málaflokkur (e.g. "Menning, listir, íþrótta- og æskulýðsmál" → 3.445,4 m.kr. in the 2026 budget).
+`fjarlog` (the skill's own CSV mirror on stjornarradid.is) turned out not to be worth pursuing here: that site
+is Blazor Server-rendered (the download link isn't in the plain HTML, and the filename carries a changing
+version suffix with no discoverable stable alias — confirmed live, all attempted paths either need a
+JS-rendered session or 302 ambiguously). `get_bill_document` reading fjárlög's enacted-law PDF directly off
+althingi.is remains this PoC's own fallback (fjárlög is itself legislation) and works — verified live,
+extracting real appropriation figures by málaflokkur (e.g. "Menning, listir, íþrótta- og æskulýðsmál" →
+3.445,4 m.kr. in the 2026 budget) — but for genuine budget analysis, prefer
+[fjarlog-mcp](https://github.com/gunnaroi/fjarlog) instead: a separate, purpose-built MCP server (same author)
+with a properly ETL'd SQLite database of ~230,000 line items across 2018-2029, covering all four budget stages
+(bill/enacted/audited actual/projection) with tools like `compare_stages` and `top_movers`. `get_bill_document`
+is still the right tool for reading the bill's own legislative text — just not for structured figures.
 
 **PDF-based, not attempted yet (own tier — fetching+parsing a public PDF isn't scraping, but locating some of
 these PDFs may need it):** `financials`, `skatturinn`, `nasdaq`, `insurance`, `annual-report-cache`.
