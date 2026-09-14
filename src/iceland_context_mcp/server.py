@@ -25,7 +25,10 @@ from .models import (
 from .data_skills import attribution_header, get_data_skill, list_data_skills
 from .open_data import (
     AirQualityResult,
+    ApiCatalogueSearchResult,
+    ArticleResult,
     BondResult,
+    ContentSearchResult,
     EarthquakeResult,
     EeaCatalogueSearchResult,
     EurostatSeriesResult,
@@ -39,10 +42,13 @@ from .open_data import (
     RikisreikningurMalefniResult,
     RikisreikningurSummary,
     SdgIndicatorResult,
+    ServiceEndpointsResult,
+    ServiceOpenApiSpecResult,
     StatTableResult,
     TenderSearchResult,
     VehicleResult,
     WeatherObservationsResult,
+    WebserviceDetail,
     browse_hagstofa,
     get_air_quality,
     get_bond,
@@ -51,18 +57,24 @@ from .open_data import (
     get_fx_rate,
     get_geodata,
     get_hagstofa_table,
+    get_island_article,
     get_nearby_planning_cases,
     get_rikisreikningur_malefni,
     get_rikisreikningur_summary,
     get_sdg_indicator,
+    get_service_openapi_spec,
     get_vehicle,
+    get_webservice_details,
     get_weather_observations,
+    list_service_endpoints,
     open_data_registry_records,
     search_eea_datasets,
     search_invoice_orgs,
     search_invoices,
+    search_island_content,
     search_planning_minutes,
     search_tenders,
+    search_webservices,
 )
 from .search import search_laws as search_laws_index
 from .sources import (
@@ -117,6 +129,14 @@ Mandatory interpretation rules:
     get_earthquakes/get_air_quality/get_bond tools ARE live retrieval, unlike rule 11's resources — but
     this data is not legal/EEA in nature, so it carries no authority-class and this server makes no legal
     claim about it. See context://iceland-data/registry for source notes and known upstream quirks.
+13. search_webservices_tool/get_webservice_details_tool/list_service_endpoints_tool/
+    get_service_openapi_spec_tool are REFERENCE METADATA ONLY about services registered on
+    Straumur/api.island.is (X-Road). They can never return real registry data (þjóðskrá, ökutækjaskrá,
+    fasteignaskrá, health records, etc.) — every listed service requires direct X-Road membership with
+    the data owner to actually call, including ones tagged 'APIGW'. Never present a result from these
+    tools as if it were the underlying data itself. search_island_content_tool/get_island_article_tool
+    are separately live retrieval of island.is's own published guidance content (how-to articles, life
+    events) — real text, not registry data, but also not law: no authority-class applies to either group.
 """.strip()
 
 mcp = MCPServer(
@@ -548,6 +568,84 @@ async def get_fx_rate_tool(date: str = "latest", base: str = "EUR", symbols: str
     Unrelated to this PoC's legal/EEA tools.
     """
     return await get_fx_rate(date, base, symbols)
+
+
+@mcp.tool()
+async def search_webservices_tool(query: str = "", limit: int = 20) -> ApiCatalogueSearchResult:
+    """Search registered web services on Straumur/api.island.is (X-Road service directory).
+
+    REFERENCE METADATA ONLY — this never returns real registry data (þjóðskrá, ökutækjaskrá,
+    fasteignaskrá, health records, etc.), only which services are registered, who owns them, and
+    how to reach them. Every listed service, including ones tagged 'APIGW', requires direct X-Road
+    membership with the data owner to actually call — there is no self-serve path through this tool.
+    `query` filters server-side by title/owner substring; empty string lists everything (~120 services).
+    Use get_webservice_details_tool for one service's full metadata including OpenAPI documentation
+    contact/description, or list_service_endpoints_tool/get_service_openapi_spec_tool for what
+    operations it documents. Unrelated to this PoC's legal/EEA tools; no authority-class.
+    """
+    return await search_webservices(query, limit)
+
+
+@mcp.tool()
+async def get_webservice_details_tool(service_id: str) -> WebserviceDetail:
+    """Full metadata for one service from search_webservices_tool: owner, access path, data sensitivity,
+    contact person/email and documentation link (when the service has published OpenAPI docs).
+
+    `service_id` is the `service_id` field from a search_webservices_tool result. REFERENCE METADATA
+    ONLY, same caveat as search_webservices_tool — never real registry data. Unrelated to this PoC's
+    legal/EEA tools; no authority-class.
+    """
+    return await get_webservice_details(service_id)
+
+
+@mcp.tool()
+async def list_service_endpoints_tool(service_id: str) -> ServiceEndpointsResult:
+    """List the operations (path, HTTP method, summary) a service's own published OpenAPI spec documents.
+
+    This is documentation of what the service CAN do, not a tool that calls anything — actually invoking
+    any of these operations requires direct X-Road access to the data owner, which this server does not
+    have and never will. Unrelated to this PoC's legal/EEA tools; no authority-class.
+    """
+    return await list_service_endpoints(service_id)
+
+
+@mcp.tool()
+async def get_service_openapi_spec_tool(service_id: str) -> ServiceOpenApiSpecResult:
+    """Full OpenAPI 3.0 document for one service, as registered on island.is — useful for generating
+    client stubs against a service you already have X-Road access to.
+
+    Still documentation only, not data access. Returns spec=None with a size note instead of the full
+    spec when it exceeds ~50,000 characters — use list_service_endpoints_tool for a compact summary
+    in that case. Unrelated to this PoC's legal/EEA tools; no authority-class.
+    """
+    return await get_service_openapi_spec(service_id)
+
+
+@mcp.tool()
+async def search_island_content_tool(query: str, lang: str = "is", limit: int = 10) -> ContentSearchResult:
+    """Search island.is's public guidance content: how-to articles, life events, organization pages
+    (e.g. "how do I apply for a passport", "what does Þjóðskrá do").
+
+    This is editorial/informational content island.is publishes for citizens — not law, not registry
+    data, no authority-class. full_text_available=true (currently type='Article' only) means
+    get_island_article_tool can retrieve the complete body; other result types currently surface only
+    title/intro here. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await search_island_content(query, lang, limit)
+
+
+@mcp.tool()
+async def get_island_article_tool(slug: str, lang: str = "is") -> ArticleResult:
+    """Full text (as Markdown) of one island.is guidance article — fees, deadlines, required documents,
+    procedure steps, as actually published, not a summary.
+
+    `slug` comes from a search_island_content_tool result with type='Article'. Only Article-typed
+    content resolves to full text currently — LifeEventPage/Manual/OrganizationSubpage results from
+    search need their own getSingle... query found the same way (see open_data.py's island.is content
+    section) before this tool can retrieve them too. Unrelated to this PoC's legal/EEA tools; no
+    authority-class — this is published guidance, not a legal determination.
+    """
+    return await get_island_article(slug, lang)
 
 
 def main() -> None:

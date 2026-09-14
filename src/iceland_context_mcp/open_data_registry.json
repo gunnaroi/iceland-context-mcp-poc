@@ -102,5 +102,17 @@
     "publisher": "European Environment Agency",
     "base_url": "https://sdi.eea.europa.eu/catalogue/srv/api/search/records/_search",
     "notes": "GeoNetwork 4.4 Elasticsearch search over ~10k EEA38 geospatial datasets (CORINE, Copernicus HRL, Natura 2000, etc.) — no auth. This tool only searches the catalogue (titles/abstracts/years); it does not fetch the underlying data, which is often a large raster hosted on EEA's discomap ArcGIS server or requires a separate free Copernicus Land account."
+  },
+  "island-catalogue": {
+    "name": "island.is API catalogue — Straumur/X-Road service directory",
+    "publisher": "Stafrænt Ísland (Digital Iceland)",
+    "base_url": "https://island.is/api/graphql",
+    "notes": "Undocumented internal GraphQL layer (no SLA), no auth. REFERENCE METADATA ONLY — lists ~120 registered web services (owner, access path, declared data sensitivity, OpenAPI docs when published) but never real registry data. Every listed service requires direct X-Road membership to actually call, including ones tagged 'APIGW' (verified: all APIGW-tagged services also carry XROAD, none are self-serve). Ported from a separate PoC (island-is-mcp, same author) — its search_webservices had built a local crawl+cache under the assumption no server-side filter existed; re-verified live before porting that getApiCatalogue's own `query` input does filter server-side, so this port calls it live instead."
+  },
+  "island-content": {
+    "name": "island.is public web content — guides, life events, organization pages",
+    "publisher": "Stafrænt Ísland (Digital Iceland) and individual government organizations publishing through island.is",
+    "base_url": "https://island.is/api/graphql",
+    "notes": "Same undocumented GraphQL layer as island-catalogue, different queries (getSingleArticle, searchResults). Editorial/informational content (e.g. 'Sækja um vegabréf' — how to apply for a passport, fees, required documents) — not law, no authority-class. Query names/fields aren't visible in browser network traffic (server-rendered pages) — found via Apollo Server's schema-validation error messages ('did you mean X?'), which remain informative with introspection disabled. get_island_article currently resolves full text for type='Article' only; LifeEventPage/Manual/OrganizationSubpage show up in search but would need their own getSingle... query found the same way to get full text."
   }
 }
