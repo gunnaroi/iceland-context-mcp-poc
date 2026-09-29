@@ -31,10 +31,15 @@ from .open_data import (
     ContentSearchResult,
     EarthquakeResult,
     EeaCatalogueSearchResult,
+    EurostatDatasetInfo,
+    EurostatDimensionValues,
+    EurostatSearchResult,
     EurostatSeriesResult,
+    HagstofaSearchResult,
     FxRateResult,
     GeoDataResult,
     HagstofaBrowseResult,
+    HagstofaTableInfo,
     InvoiceSearchResult,
     NearbyCasesResult,
     OrgSearchResult,
@@ -53,10 +58,15 @@ from .open_data import (
     get_air_quality,
     get_bond,
     get_earthquakes,
+    describe_eurostat_dataset,
     get_eurostat_series,
+    list_eurostat_dimension_values,
+    search_eurostat_catalog,
+    search_hagstofa_catalog,
     get_fx_rate,
     get_geodata,
     get_hagstofa_table,
+    get_hagstofa_table_info as fetch_hagstofa_table_info,
     get_island_article,
     get_nearby_planning_cases,
     get_rikisreikningur_malefni,
@@ -129,6 +139,9 @@ Mandatory interpretation rules:
     get_earthquakes/get_air_quality/get_bond tools ARE live retrieval, unlike rule 11's resources — but
     this data is not legal/EEA in nature, so it carries no authority-class and this server makes no legal
     claim about it. See context://iceland-data/registry for source notes and known upstream quirks.
+    For Icelandic statistics start with search_hagstofa_tables -> get_hagstofa_table_info -> get_hagstofa_table_tool;
+    for EU comparisons search_eurostat_datasets_tool -> get_eurostat_dataset_info -> get_eurostat_series_tool. Never
+    guess table paths, dataset codes or filter values — the discovery tools exist because guesses fail.
 13. search_webservices_tool/get_webservice_details_tool/list_service_endpoints_tool/
     get_service_openapi_spec_tool are REFERENCE METADATA ONLY about services registered on
     Straumur/api.island.is (X-Road). They can never return real registry data (þjóðskrá, ökutækjaskrá,
@@ -382,37 +395,66 @@ async def get_geodata_tool(
 
 
 @mcp.tool()
-async def get_hagstofa_table_tool(table_path: str, filters: dict[str, list[str]] | None = None) -> StatTableResult:
-    """Fetch an Hagstofa Íslands (Statistics Iceland) PX-Web table by its exact path.
+async def search_hagstofa_tables(query: str, limit: int = 15) -> HagstofaSearchResult:
+    """Keyword-search Hagstofa Íslands' ~2,100 statistical tables (the fastest way to find a table path).
 
-    table_path must be a full, exact path with every folder segment present — there is no shorthand or
-    fuzzy matching, and a guessed or partial path (including a bare filename like 'VIS01000.px' with the
-    folders left off) will fail. Do not guess: if you don't already have a verified full path, call
-    browse_hagstofa_tables first and use the full_path it returns for the table you want.
-
-    Verified working example (CPI / vísitala neysluverðs, monthly since 1988):
-    table_path='Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px' with no filters returns the whole series.
-
-    Optional `filters` maps a PX-Web dimension code to allowed values to narrow the query server-side.
-    Values are as published — check the table's own metadata for units/scale (e.g. thousands of ISK, mean vs.
-    median codes) before using them. Unrelated to this PoC's legal/EEA tools; no authority-class/provenance.
+    START HERE for any Icelandic statistics question. Searches table titles and their folder names in a
+    locally cached index of Hagstofa's whole catalogue (PX-Web itself has no search). Icelandic terms work
+    best and inflected forms match (verðbólga / verðbólgu); common English terms (inflation, GDP,
+    unemployment, population, wages, housing, tourism, ...) are translated automatically. Every word must
+    match. Returns table `path`s to pass unmodified to get_hagstofa_table_info (to see variables/valid
+    values) and then get_hagstofa_table_tool. Prefer results whose `updated` date is recent; older
+    "eldra efni" tables are frozen historical series.
     """
-    return await get_hagstofa_table(table_path, filters)
+    return await search_hagstofa_catalog(query, limit)
+
+
+@mcp.tool()
+async def get_hagstofa_table_info(
+    table_path: str, variable: str | None = None, query: str | None = None, limit: int = 50
+) -> HagstofaTableInfo:
+    """Inspect one Hagstofa table before querying it: its variables, how many values each has, and sample values.
+
+    Use the `path` from search_hagstofa_tables/browse_hagstofa_tables. Without `variable` you get every
+    variable with a few sample values (for the time variable: first 2 and last 4 periods, so you can see how
+    recent the data is). To see the valid codes for one variable, pass `variable` (its code) and optionally
+    `query` to filter values by substring — e.g. variable='Sveitarfélag', query='Reykjav'. `total_cells` is
+    the size of an unfiltered query; Hagstofa rejects selections over 100,000 cells.
+    """
+    return await fetch_hagstofa_table_info(table_path, variable, query, limit)
+
+
+@mcp.tool()
+async def get_hagstofa_table_tool(
+    table_path: str, filters: dict[str, list[str]] | None = None, last_n_periods: int | None = None
+) -> StatTableResult:
+    """Fetch data from a Hagstofa Íslands (Statistics Iceland) PX-Web table.
+
+    Workflow: search_hagstofa_tables (find the table) -> get_hagstofa_table_info (see variables and valid
+    values) -> this tool. table_path must be the exact path returned by search/browse — never guessed or
+    shortened (a bare filename like 'VIS01000.px' fails).
+
+    `filters` maps a variable code to a list of values, given as codes or as exact labels; '*' selects all
+    values, e.g. {"Vísitala": ["CPI"], "Liður": ["change_A"]}. Variables you omit default to all values (or
+    are summed away when the table allows it). `last_n_periods` returns only the latest N periods of the
+    table's time variable — use it instead of filtering time, and to keep large tables under Hagstofa's
+    100,000-cell limit. Errors list the valid variables/values. Values are as published — check the
+    table's own units/scale (e.g. thousands of ISK). Verified example: CPI (vísitala neysluverðs, monthly since
+    1988) is 'Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px'. Unrelated to this PoC's legal/EEA tools; no
+    authority-class/provenance.
+    """
+    return await get_hagstofa_table(table_path, filters, last_n_periods)
 
 
 @mcp.tool()
 async def browse_hagstofa_tables(path: str = "") -> HagstofaBrowseResult:
-    """Browse Hagstofa Íslands' PX-Web table catalog to discover a table path for get_hagstofa_table.
+    """Browse Hagstofa Íslands' PX-Web folder tree one level at a time (alternative to search_hagstofa_tables).
 
-    Always start here rather than guessing a path for get_hagstofa_table_tool — folder names are Icelandic
-    abbreviations that are not derivable from a table's title or code. Call with no path for the top-level
-    subject areas (folders), then repeatedly pass a returned folder entry's `full_path` back into this same
-    tool to descend one level at a time — do not skip levels or invent intermediate segments — until
-    entry_type='table' entries appear. Pass that table entry's `full_path` verbatim (unmodified) as
-    `table_path` to get_hagstofa_table_tool. Example real descent for CPI: '' -> 'Efnahagur' ->
-    'Efnahagur/visitolur' -> 'Efnahagur/visitolur/1_vnv' -> 'Efnahagur/visitolur/1_vnv/1_vnv', which lists
-    the table 'VIS01000.px' whose full_path 'Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px' is what you pass
-    on. Unrelated to this PoC's legal/EEA tools.
+    Prefer search_hagstofa_tables when you know what you are looking for; browse when exploring what
+    exists. Call with no path for the top-level subject areas, then pass a returned folder's `full_path`
+    back in to descend one level — do not skip levels or invent segments — until entry_type='table'
+    entries appear. Pass a table's `full_path` verbatim to get_hagstofa_table_info/get_hagstofa_table_tool.
+    Unrelated to this PoC's legal/EEA tools.
     """
     return await browse_hagstofa(path)
 
@@ -428,13 +470,56 @@ async def get_vehicle_tool(search: str) -> VehicleResult:
 
 
 @mcp.tool()
-async def get_eurostat_series_tool(dataset: str, filters: dict[str, str] | None = None) -> EurostatSeriesResult:
-    """Fetch an Eurostat dataset (EU/euro-area statistics) by code, e.g. 'prc_hicp_midx' with filters like geo=EA20.
+async def search_eurostat_datasets_tool(query: str, limit: int = 15) -> EurostatSearchResult:
+    """Keyword-search Eurostat's ~8,900 datasets by title, code or theme (e.g. 'hicp inflation', 'unemployment').
 
-    Useful as an EU/euro-area comparison counterpart to Hagstofa series. The 'time' dimension cannot be
-    range-filtered server-side — fetch and slice locally. Unrelated to this PoC's legal/EEA tools.
+    START HERE to find an Eurostat dataset code — codes like 'prc_hicp_minr' can't be guessed. Results show
+    each dataset's data_start/data_end: prefer one whose data_end is recent (older editions are frozen —
+    e.g. prc_hicp_midx stops at 2025-12, its successor is prc_hicp_minr). Next call
+    get_eurostat_dataset_info, then get_eurostat_series_tool. Iceland is geo=IS in most datasets.
     """
-    return await get_eurostat_series(dataset, filters)
+    return await search_eurostat_catalog(query, limit)
+
+
+@mcp.tool()
+async def get_eurostat_dataset_info(dataset: str) -> EurostatDatasetInfo:
+    """List an Eurostat dataset's dimensions (in order), how many codes each has, and sample codes.
+
+    Use before get_eurostat_series_tool to learn the dimension names and valid codes for `filters`. For the
+    full code list of one dimension (e.g. every geo or COICOP code), use get_eurostat_dimension_values.
+    """
+    return await describe_eurostat_dataset(dataset)
+
+
+@mcp.tool()
+async def get_eurostat_dimension_values(dataset: str, dimension: str, query: str | None = None, limit: int = 60) -> EurostatDimensionValues:
+    """List the valid codes and labels of one dimension of an Eurostat dataset, optionally filtered by `query`.
+
+    e.g. dataset='prc_hicp_minr', dimension='geo', query='ice' -> IS (Iceland). Only codes actually used by
+    this dataset are listed.
+    """
+    return await list_eurostat_dimension_values(dataset, dimension, query, limit)
+
+
+@mcp.tool()
+async def get_eurostat_series_tool(
+    dataset: str,
+    filters: dict[str, str] | None = None,
+    since_period: str | None = None,
+    until_period: str | None = None,
+    last_n_periods: int | None = None,
+) -> EurostatSeriesResult:
+    """Fetch observations from an Eurostat dataset (EU/euro-area statistics), e.g. HICP inflation for Iceland vs the euro area.
+
+    `filters` maps dimension ids to a code, or several codes joined with '+': {"geo": "IS+EA20", "coicop":
+    "CP00", "unit": "I15"}. Get dataset codes from search_eurostat_datasets_tool and valid dimension codes
+    from get_eurostat_dataset_info / get_eurostat_dimension_values — unknown codes are rejected with a
+    list of valid ones. Time range: since_period / until_period (e.g. '2020', '2020-06', '2020-Q1') or
+    last_n_periods. Unfiltered dimensions return every value, so always filter big datasets. Observations
+    carry Eurostat's flag (p=provisional, e=estimated, b=break, ...) and value=null for missing points. A
+    useful counterpart to Hagstofa series. Unrelated to this PoC's legal/EEA tools.
+    """
+    return await get_eurostat_series(dataset, filters, since_period, until_period, last_n_periods)
 
 
 @mcp.tool()

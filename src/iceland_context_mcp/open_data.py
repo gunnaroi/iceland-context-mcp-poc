@@ -23,6 +23,15 @@ import httpx
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
+from .eurostat import (
+    EUROSTAT_API,
+    EurostatSearchHit,
+    dimension_by_id,
+    load_structure,
+    load_toc,
+    search_toc,
+)
+
 OPEN_DATA_REGISTRY_PATH = Path(__file__).with_name("open_data_registry.json")
 USER_AGENT = "IcelandTrustedContextMCPPoC/0.1 (+public research proof of concept)"
 MAX_ROWS = 500
@@ -148,6 +157,7 @@ class StatTableResult(BaseModel):
     columns: list[str]
     rows: list[list[str]]
     truncated: bool
+    total_rows: int
     source_url: str
     retrieved_at: str
     note: str = "Hagstofa Íslands PX-Web table, fetched as CSV and parsed. Values are as published — check the table's own unit/scale conventions (e.g. thousands of ISK) before using them."
@@ -162,25 +172,223 @@ def _decode_hagstofa_csv(content: bytes, declared_encoding: str | None) -> str:
     return content.decode(declared_encoding or "utf-8-sig")
 
 
-async def get_hagstofa_table(table_path: str, filters: dict[str, list[str]] | None = None) -> StatTableResult:
-    table_path = table_path.strip("/")
-    url = f"{HAGSTOFA_BASE}{table_path}"
-    query = [{"code": code, "selection": {"filter": "item", "values": values}} for code, values in (filters or {}).items()]
-    payload = {"query": query, "response": {"format": "csv"}}
+_hagstofa_meta_cache: dict[str, tuple[float, dict]] = {}
+HAGSTOFA_META_TTL_SECONDS = 3600
+HAGSTOFA_MAX_CELLS = 100_000  # Hagstofa's PX-Web rejects larger selections (checked against its 403 response)
+
+
+class HagstofaValue(BaseModel):
+    code: str
+    label: str
+
+
+class HagstofaVariable(BaseModel):
+    code: str
+    text: str
+    is_time: bool
+    value_count: int
+    values: list[HagstofaValue]
+    values_shown_note: str | None = None
+
+
+class HagstofaTableInfo(BaseModel):
+    table_path: str
+    title: str
+    variables: list[HagstofaVariable]
+    total_cells: int
+    source_url: str
+    retrieved_at: str
+    note: str = (
+        "Pass a variable's `code` as a key in get_hagstofa_table_tool's `filters`, with value `code`s (or exact "
+        "labels) as the list; '*' selects every value. Omitted variables default to all values (or are summed "
+        "away, for variables the table allows eliminating). For time series use last_n_periods instead of "
+        "filtering the time variable."
+    )
+
+
+def _bad_path_error(table_path: str) -> ToolError:
+    return ToolError(
+        f"No PX-Web table at path '{table_path}'. This path must match a real folder/table exactly — there is "
+        "no fuzzy matching, and a guessed or partial path always fails this way. Use search_hagstofa_tables "
+        "(keyword search) or browse_hagstofa_tables (folder by folder) and pass the returned path unmodified."
+    )
+
+
+async def _hagstofa_metadata(table_path: str) -> dict:
+    import time
+
+    cached = _hagstofa_meta_cache.get(table_path)
+    if cached and time.time() - cached[0] < HAGSTOFA_META_TTL_SECONDS:
+        return cached[1]
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
-        response = await client.post(url, json=payload)
-        if response.status_code == 400:
-            # PX-Web returns a bare 400 with no body for any path that doesn't exist
-            # exactly as given (wrong segment, missing segment, bare filename, etc.) —
-            # there's no fuzzy matching, so a guessed path can't be salvaged. Surface an
-            # actionable message instead of letting this become an opaque tool crash.
+        response = await client.get(f"{HAGSTOFA_BASE}{table_path}")
+    # PX-Web answers a bare 400/404 (no body) for any path that isn't exactly a table.
+    if response.status_code in (400, 404):
+        raise _bad_path_error(table_path)
+    response.raise_for_status()
+    try:
+        data = response.json()
+    except ValueError:
+        raise _bad_path_error(table_path) from None  # a folder path returns a listing, not table metadata
+    if not isinstance(data, dict) or "variables" not in data:
+        raise ToolError(
+            f"'{table_path}' is a folder, not a table. Pass it to browse_hagstofa_tables to list what it contains."
+        )
+    _hagstofa_meta_cache[table_path] = (time.time(), data)
+    return data
+
+
+def _variable_values(variable: dict) -> list[HagstofaValue]:
+    codes = variable.get("values", [])
+    labels = variable.get("valueTexts", codes)
+    return [HagstofaValue(code=c, label=l) for c, l in zip(codes, labels)]
+
+
+def _resolve_filter_values(variable: dict, requested: list[str], table_path: str) -> list[str]:
+    """Map requested values to codes. Accepts codes or (case-insensitive) labels; '*' = all."""
+    if any(v == "*" for v in requested):
+        return ["*"]
+    values = _variable_values(variable)
+    by_code = {v.code for v in values}
+    by_label = {v.label.casefold(): v.code for v in values}
+    resolved, unknown = [], []
+    for item in requested:
+        item = str(item)
+        if item in by_code:
+            resolved.append(item)
+        elif item.casefold() in by_label:
+            resolved.append(by_label[item.casefold()])
+        else:
+            unknown.append(item)
+    if unknown:
+        sample = ", ".join(f"{v.code} ({v.label[:30]})" for v in values[:6])
+        raise ToolError(
+            f"Value(s) {unknown} not found in variable '{variable['code']}' of '{table_path}'. Call "
+            f"get_hagstofa_table_info with variable='{variable['code']}' to list valid values (e.g. {sample})."
+        )
+    return resolved
+
+
+async def get_hagstofa_table_info(
+    table_path: str, variable: str | None = None, query: str | None = None, limit: int = 50
+) -> HagstofaTableInfo:
+    table_path = table_path.strip("/")
+    meta = await _hagstofa_metadata(table_path)
+    variables_out: list[HagstofaVariable] = []
+    total_cells = 1
+    for var in meta["variables"]:
+        values = _variable_values(var)
+        total_cells *= max(len(values), 1)
+        if variable is not None and var["code"].casefold() != variable.casefold():
+            continue
+        is_time = bool(var.get("time"))
+        note = None
+        if variable is not None:
+            if query:
+                needle = query.casefold()
+                values = [v for v in values if needle in v.code.casefold() or needle in v.label.casefold()]
+            shown = values[:limit]
+            if len(values) > len(shown):
+                note = f"Showing {len(shown)} of {len(values)} matching values; narrow with `query` or raise `limit`."
+        elif is_time and len(values) > 8:
+            shown = values[:2] + values[-4:]
+            note = f"Time variable: first 2 and last 4 of {len(values)} periods shown."
+        elif len(values) > 8:
+            shown = values[:8]
+            note = f"First 8 of {len(values)} values shown; pass variable='{var['code']}' to list them all."
+        else:
+            shown = values
+        variables_out.append(
+            HagstofaVariable(
+                code=var["code"],
+                text=var.get("text", var["code"]),
+                is_time=is_time,
+                value_count=len(_variable_values(var)),
+                values=shown,
+                values_shown_note=note,
+            )
+        )
+    if variable is not None and not variables_out:
+        raise ToolError(
+            f"Table '{table_path}' has no variable '{variable}'. Its variables are: "
+            + ", ".join(v["code"] for v in meta["variables"])
+        )
+    return HagstofaTableInfo(
+        table_path=table_path,
+        title=meta.get("title", ""),
+        variables=variables_out,
+        total_cells=total_cells,
+        source_url=f"{HAGSTOFA_BASE}{table_path}",
+        retrieved_at=utc_now(),
+    )
+
+
+async def get_hagstofa_table(
+    table_path: str, filters: dict[str, list[str]] | None = None, last_n_periods: int | None = None
+) -> StatTableResult:
+    table_path = table_path.strip("/")
+    url = f"{HAGSTOFA_BASE}{table_path}"
+    meta = await _hagstofa_metadata(table_path)
+    variables = {v["code"].casefold(): v for v in meta["variables"]}
+    time_var = next((v for v in meta["variables"] if v.get("time")), None)
+
+    query = []
+    selected_counts: dict[str, int] = {}
+    for code, requested in (filters or {}).items():
+        var = variables.get(code.casefold())
+        if var is None:
             raise ToolError(
-                f"No PX-Web table at path '{table_path}'. This path must match a real "
-                "folder/table exactly — there is no fuzzy matching, and a guessed or "
-                "partial path always fails this way. Call browse_hagstofa_tables (with "
-                "no path for top-level areas, then descending one folder at a time) and "
-                "pass its returned full_path for the table you want, unmodified."
+                f"Table '{table_path}' has no variable '{code}'. Its variables are: "
+                + ", ".join(v["code"] for v in meta["variables"])
+                + ". Call get_hagstofa_table_info for their values."
+            )
+        if isinstance(requested, str):
+            requested = [requested]
+        if last_n_periods is not None and var is time_var:
+            raise ToolError("Use either last_n_periods or a filter on the time variable, not both.")
+        values = _resolve_filter_values(var, list(requested), table_path)
+        if values == ["*"]:
+            query.append({"code": var["code"], "selection": {"filter": "all", "values": ["*"]}})
+            selected_counts[var["code"]] = len(var["values"])
+        else:
+            query.append({"code": var["code"], "selection": {"filter": "item", "values": values}})
+            selected_counts[var["code"]] = len(values)
+    if last_n_periods is not None:
+        if time_var is None:
+            raise ToolError(f"Table '{table_path}' has no time variable, so last_n_periods does not apply.")
+        if last_n_periods < 1:
+            raise ToolError("last_n_periods must be at least 1.")
+        query.append({"code": time_var["code"], "selection": {"filter": "top", "values": [str(last_n_periods)]}})
+        selected_counts[time_var["code"]] = min(last_n_periods, len(time_var["values"]))
+
+    estimated_cells = 1
+    for var in meta["variables"]:
+        estimated_cells *= selected_counts.get(var["code"], len(var["values"]))
+    if estimated_cells > HAGSTOFA_MAX_CELLS:
+        biggest = sorted(
+            (v for v in meta["variables"] if v["code"] not in selected_counts),
+            key=lambda v: -len(v["values"]),
+        )[:3]
+        raise ToolError(
+            f"This selection is about {estimated_cells:,} cells, over Hagstofa's ~{HAGSTOFA_MAX_CELLS:,} limit. "
+            "Narrow it with `filters` (most values live in: "
+            + ", ".join(f"{v['code']} [{len(v['values'])}]" for v in biggest)
+            + (f") or set last_n_periods for the time variable '{time_var['code']}'." if time_var else ").")
+        )
+
+    payload = {"query": query, "response": {"format": "csv"}}
+    timeout = httpx.Timeout(60.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
+        response = await client.post(url, json=payload)
+        if response.status_code == 403:
+            raise ToolError(
+                "Hagstofa rejected the query as too large (403). Narrow it with `filters` or set last_n_periods."
+            )
+        if response.status_code == 400:
+            raise ToolError(
+                f"Hagstofa rejected the query for '{table_path}' (400). Check filter values with "
+                "get_hagstofa_table_info."
             )
         response.raise_for_status()
         text = _decode_hagstofa_csv(response.content, response.encoding)
@@ -193,8 +401,52 @@ async def get_hagstofa_table(table_path: str, filters: dict[str, list[str]] | No
         columns=header,
         rows=body[:MAX_ROWS],
         truncated=truncated,
+        total_rows=len(body),
         source_url=url,
         retrieved_at=utc_now(),
+    )
+
+
+class HagstofaSearchHit(BaseModel):
+    path: str
+    title: str
+    folder: str
+    updated: str | None = None
+
+
+class HagstofaSearchResult(BaseModel):
+    query: str
+    hits: list[HagstofaSearchHit]
+    tables_indexed: int
+    catalogue_crawled_at: str
+    catalogue_refreshing: bool
+    note: str = (
+        "Locally cached index of Hagstofa's PX-Web catalogue (PX-Web has no search). Pass a hit's `path` unmodified "
+        "to get_hagstofa_table_info, then get_hagstofa_table_tool. No hits: try Icelandic terms or fewer words."
+    )
+
+
+async def search_hagstofa_catalog(query: str, limit: int = 15) -> HagstofaSearchResult:
+    from . import hagstofa_catalog as catalog
+
+    limit = max(1, min(limit, 50))
+    snapshot = catalog.load_snapshot()
+    if snapshot is None:
+        # No seed shipped and no cache yet: crawl in the foreground (a few minutes) is too slow for a
+        # tool call, so start it in the background and tell the caller to fall back to browsing.
+        catalog.ensure_fresh()
+        raise ToolError(
+            "The Hagstofa catalogue index is being built (first run takes a few minutes). Use "
+            "browse_hagstofa_tables meanwhile, or retry shortly."
+        )
+    catalog.ensure_fresh()  # kicks off a background re-crawl when the snapshot is stale
+    hits = catalog.search_catalog(snapshot, query, limit)
+    return HagstofaSearchResult(
+        query=query,
+        hits=[HagstofaSearchHit(path=h.path, title=h.title, folder=h.folder, updated=h.updated) for h in hits],
+        tables_indexed=len(snapshot.tables),
+        catalogue_crawled_at=snapshot.crawled_at,
+        catalogue_refreshing=catalog.refreshing(),
     )
 
 
@@ -284,64 +536,222 @@ EUROSTAT_BASE = "https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/
 
 class EurostatObservation(BaseModel):
     dimensions: dict[str, str]
-    value: float
+    value: float | None
+    flag: str | None = None
 
 
 class EurostatSeriesResult(BaseModel):
     dataset: str
     filters: dict[str, str]
     observations: list[EurostatObservation]
+    total_observations: int
     truncated: bool
     source_url: str
     retrieved_at: str
+    note: str = (
+        "Observations with value=null are published-as-missing; `flag` carries Eurostat's OBS_FLAG code when "
+        "present (e.g. p=provisional, e=estimated, b=break in time series, c=confidential, :=not available)."
+    )
 
 
-async def get_eurostat_series(dataset: str, filters: dict[str, str] | None = None) -> EurostatSeriesResult:
-    url = f"{EUROSTAT_BASE}{dataset}"
-    params = {"format": "JSON", **(filters or {})}
-    data = await _get_json(url, params=params)
+def decode_eurostat_jsonstat(data: dict) -> tuple[list[EurostatObservation], int]:
+    """Decode a json-stat2 message into observations; returns (first MAX_ROWS observations, total)."""
     dims = data.get("dimension", {})
     dim_ids = data.get("id", list(dims.keys()))
     sizes = data.get("size", [])
-    # json-stat2: build index->label maps per dimension, then decode the
-    # composite row-major index used by the flat "value" map.
+    # json-stat2: build index->label maps per dimension, then decode the composite
+    # row-major index used by the flat "value" map (last dimension varies fastest).
     index_maps = []
     for dim_id in dim_ids:
         category = dims.get(dim_id, {}).get("category", {})
         index = category.get("index", {})
         label = category.get("label", {})
-        # index maps code->position; invert to position->(code,label)
         pos_to_code = {v: k for k, v in index.items()} if isinstance(index, dict) else {}
         index_maps.append((dim_id, pos_to_code, label))
 
     values = data.get("value", {})
+    if isinstance(values, list):  # json-stat also allows a dense array
+        values = {str(i): v for i, v in enumerate(values) if v is not None}
+    status = data.get("status", {})
+    if isinstance(status, list):
+        status = {str(i): v for i, v in enumerate(status) if v}
+    # Flagged-but-missing observations (e.g. ':' not available) appear only in `status`.
+    keys = sorted(set(values) | set(status), key=int)
+
+    divisors = []
+    acc = 1
+    for size in reversed(sizes):
+        divisors.append(acc)
+        acc *= max(size, 1)
+    divisors.reverse()
+
     observations: list[EurostatObservation] = []
-    count = 0
-    for flat_key, value in values.items():
-        if count >= MAX_ROWS:
-            break
-        pos = int(flat_key)
+    for flat_key in keys[:MAX_ROWS]:
+        remainder = int(flat_key)
         dims_out = {}
-        remainder = pos
-        # row-major, first dimension varies fastest per json-stat2
-        divisors = []
-        acc = 1
-        for size in sizes:
-            divisors.append(acc)
-            acc *= max(size, 1)
         for (dim_id, pos_to_code, label), size, divisor in zip(index_maps, sizes, divisors):
             idx = (remainder // divisor) % max(size, 1)
             code = pos_to_code.get(idx, str(idx))
             dims_out[dim_id] = label.get(code, code) if isinstance(label, dict) else code
-        observations.append(EurostatObservation(dimensions=dims_out, value=float(value)))
-        count += 1
+        raw = values.get(flat_key)
+        observations.append(
+            EurostatObservation(
+                dimensions=dims_out,
+                value=float(raw) if raw is not None else None,
+                flag=status.get(flat_key),
+            )
+        )
+    return observations, len(keys)
+
+
+async def get_eurostat_series(
+    dataset: str,
+    filters: dict[str, str] | None = None,
+    since_period: str | None = None,
+    until_period: str | None = None,
+    last_n_periods: int | None = None,
+) -> EurostatSeriesResult:
+    from .eurostat import eurostat_error_message, load_structure, validate_filters
+
+    filters = filters or {}
+    if last_n_periods is not None and (since_period or until_period):
+        raise ToolError("Use either last_n_periods or since_period/until_period, not both.")
+    dataset = dataset.strip().lower()
+    structure = await load_structure(dataset)  # ToolError with a search hint if the dataset doesn't exist
+    validate_filters(structure, {k: v for k, v in filters.items() if k.lower() != "time"})
+
+    url = f"{EUROSTAT_BASE}{dataset}"
+    # Eurostat takes several values for one dimension as repeated parameters (geo=IS&geo=DE);
+    # callers write that as "IS+DE".
+    params: list[tuple[str, str]] = [("format", "JSON"), ("lang", "EN")]
+    for dim_id, value in filters.items():
+        params.extend((dim_id, v) for v in str(value).split("+") if v)
+    if since_period:
+        params.append(("sinceTimePeriod", since_period))
+    if until_period:
+        params.append(("untilTimePeriod", until_period))
+    if last_n_periods is not None:
+        params.append(("lastTimePeriod", str(last_n_periods)))
+    timeout = httpx.Timeout(60.0, connect=10.0)
+    async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
+        response = await client.get(url, params=params)
+    if response.status_code >= 400:
+        message = eurostat_error_message(response)
+        if message:
+            hint = (
+                " Narrow it with `filters` (see get_eurostat_dataset_info for dimensions) and since_period/last_n_periods."
+                if response.status_code == 413
+                else ""
+            )
+            raise ToolError(f"Eurostat error {response.status_code}: {message}.{hint}")
+    response.raise_for_status()
+    observations, total = decode_eurostat_jsonstat(response.json())
 
     return EurostatSeriesResult(
         dataset=dataset,
-        filters=filters or {},
+        filters=filters,
         observations=observations,
-        truncated=len(values) > MAX_ROWS,
+        total_observations=total,
+        truncated=total > MAX_ROWS,
         source_url=str(httpx.URL(url, params=params)),
+        retrieved_at=utc_now(),
+    )
+
+
+class EurostatSearchResult(BaseModel):
+    query: str
+    hits: list[EurostatSearchHit]
+    source_url: str
+    retrieved_at: str
+
+
+async def search_eurostat_catalog(query: str, limit: int = 15) -> EurostatSearchResult:
+    limit = max(1, min(limit, 50))
+    entries = await load_toc()
+    return EurostatSearchResult(
+        query=query,
+        hits=search_toc(entries, query, limit),
+        source_url=f"{EUROSTAT_API}catalogue/toc/txt?lang=en",
+        retrieved_at=utc_now(),
+    )
+
+
+class EurostatDimensionSummary(BaseModel):
+    id: str
+    position: int
+    is_time: bool
+    code_count: int
+    sample_codes: dict[str, str]
+
+
+class EurostatDatasetInfo(BaseModel):
+    dataset: str
+    title: str
+    data_start: str | None
+    data_end: str | None
+    last_data_update: str | None
+    dimensions: list[EurostatDimensionSummary]
+    source_url: str
+    retrieved_at: str
+    note: str = (
+        "Use each dimension `id` (lowercase) as a key in get_eurostat_series_tool's `filters`. Dimensions you omit "
+        "return every value. The time dimension is set with since_period/until_period/last_n_periods instead."
+    )
+
+
+async def describe_eurostat_dataset(dataset: str) -> EurostatDatasetInfo:
+    structure = await load_structure(dataset)
+    toc = next((e for e in await load_toc() if e.code == structure.dataset), None)
+    return EurostatDatasetInfo(
+        dataset=structure.dataset,
+        title=structure.title,
+        data_start=toc.data_start if toc else None,
+        data_end=toc.data_end if toc else None,
+        last_data_update=toc.last_data_update if toc else None,
+        dimensions=[
+            EurostatDimensionSummary(
+                id=d.id,
+                position=d.position,
+                is_time=d.is_time,
+                code_count=len(d.codes),
+                sample_codes=dict(list(d.codes.items())[:6]),
+            )
+            for d in structure.dimensions
+        ],
+        source_url=f"{EUROSTAT_API}sdmx/2.1/dataflow/ESTAT/{structure.dataset}/latest",
+        retrieved_at=utc_now(),
+    )
+
+
+class EurostatDimensionValues(BaseModel):
+    dataset: str
+    dimension: str
+    total_codes: int
+    matching_codes: int
+    values: dict[str, str]
+    truncated: bool
+    retrieved_at: str
+
+
+async def list_eurostat_dimension_values(
+    dataset: str, dimension: str, query: str | None = None, limit: int = 60
+) -> EurostatDimensionValues:
+    structure = await load_structure(dataset)
+    dim = dimension_by_id(structure, dimension)
+    if dim.is_time:
+        raise ToolError("The time dimension has no code list; use since_period/until_period/last_n_periods instead.")
+    codes = dim.codes
+    if query:
+        needle = query.casefold()
+        codes = {c: l for c, l in codes.items() if needle in c.casefold() or needle in l.casefold()}
+    limit = max(1, min(limit, 500))
+    return EurostatDimensionValues(
+        dataset=structure.dataset,
+        dimension=dim.id,
+        total_codes=len(dim.codes),
+        matching_codes=len(codes),
+        values=dict(list(codes.items())[:limit]),
+        truncated=len(codes) > limit,
         retrieved_at=utc_now(),
     )
 

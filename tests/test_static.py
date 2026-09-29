@@ -295,3 +295,127 @@ def test_get_island_article_live():
     article = asyncio.run(run())
     assert article.title == "Sækja um vegabréf"
     assert len(article.body_markdown) > 100
+
+
+# --- Hagstofa catalogue search / table filters ------------------------------------------------
+
+
+def test_hagstofa_catalog_seed_is_complete_and_searchable():
+    from iceland_context_mcp import hagstofa_catalog as catalog
+
+    snapshot = catalog.load_snapshot()
+    assert snapshot is not None and len(snapshot.tables) > 1500
+    for query in ("inflation", "verðbólga", "vísitala neysluverðs"):
+        paths = [h.path for h in catalog.search_catalog(snapshot, query, 5)]
+        assert "Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px" in paths, query
+
+
+def test_hagstofa_catalog_search_folds_accents_and_inflection():
+    from iceland_context_mcp import hagstofa_catalog as catalog
+
+    assert catalog.fold("Þjóðhagsreikningar") == "thjodhagsreikningar"
+    snapshot = catalog.load_snapshot()
+    # ASCII-typed and inflected forms must find the same table as the exact Icelandic title words
+    assert catalog.search_catalog(snapshot, "landsframleidslu", 3)
+    assert catalog.search_catalog(snapshot, "launavisitala", 3)
+
+
+def test_hagstofa_catalog_search_no_match_returns_empty():
+    from iceland_context_mcp import hagstofa_catalog as catalog
+
+    assert catalog.search_catalog(catalog.load_snapshot(), "zzzzqqqq", 5) == []
+
+
+def test_hagstofa_filter_values_accept_codes_labels_and_wildcard():
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from iceland_context_mcp.open_data import _resolve_filter_values
+
+    variable = {"code": "Vísitala", "values": ["CPI", "CPILH"], "valueTexts": ["Vísitala neysluverðs", "Án húsnæðis"]}
+    assert _resolve_filter_values(variable, ["CPI"], "t") == ["CPI"]
+    assert _resolve_filter_values(variable, ["án húsnæðis"], "t") == ["CPILH"]
+    assert _resolve_filter_values(variable, ["CPI", "*"], "t") == ["*"]
+    try:
+        _resolve_filter_values(variable, ["NOPE"], "t")
+        assert False, "expected ToolError"
+    except ToolError as e:
+        assert "get_hagstofa_table_info" in str(e)
+
+
+# --- Eurostat discovery -----------------------------------------------------------------------
+
+TOC_SAMPLE = (
+    '"title"\t"code"\t"type"\t"last update of data"\t"last table structure change"\t"data start"\t"data end"\t"values"\n'
+    '"Database by themes"\t"data"\t"folder"\t" "\t" "\t" "\t" "\t\n'
+    '"    Economy and finance"\t"economy"\t"folder"\t" "\t" "\t" "\t" "\t\n'
+    '"        Prices"\t"prc"\t"folder"\t" "\t" "\t" "\t" "\t\n'
+    '"            HICP - monthly data (index)"\t"prc_hicp_midx"\t"dataset"\t"06.02.2026"\t"07.01.2026"\t"1996-01"\t"2025-12"\t7699058\n'
+    '"        National accounts"\t"na"\t"folder"\t" "\t" "\t" "\t" "\t\n'
+    '"            GDP and main components"\t"nama_10_gdp"\t"dataset"\t"29.09.2026"\t"08.09.2026"\t"1975"\t"2025"\t1095720\n'
+)
+
+
+def test_eurostat_toc_parse_and_search():
+    from iceland_context_mcp.eurostat import _parse_toc, search_toc
+
+    entries = _parse_toc(TOC_SAMPLE)
+    assert [e.code for e in entries] == ["prc_hicp_midx", "nama_10_gdp"]
+    assert entries[0].theme == "Economy and finance > Prices"
+    assert entries[0].observation_count == 7699058 and entries[0].data_end == "2025-12"
+    assert search_toc(entries, "inflation", 5)[0].code == "prc_hicp_midx"  # synonym for hicp
+    assert search_toc(entries, "nama_10_gdp", 5)[0].code == "nama_10_gdp"
+    assert search_toc(entries, "zzz", 5) == []
+
+
+STRUCTURE_SAMPLE = b"""<?xml version="1.0"?>
+<m:Structure xmlns:m="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/message"
+  xmlns:s="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/structure"
+  xmlns:c="http://www.sdmx.org/resources/sdmxml/schemas/v2_1/common"
+  xmlns:xml="http://www.w3.org/XML/1998/namespace"><m:Structures>
+<s:Dataflows><s:Dataflow id="X"><c:Name xml:lang="de">HVPI</c:Name><c:Name xml:lang="en">HICP</c:Name></s:Dataflow></s:Dataflows>
+<s:Codelists><s:Codelist id="GEO"><s:Code id="IS"><c:Name xml:lang="de">Island</c:Name><c:Name xml:lang="en">Iceland</c:Name></s:Code>
+<s:Code id="DE"><c:Name xml:lang="en">Germany</c:Name></s:Code></s:Codelist></s:Codelists>
+<s:DataStructures><s:DataStructure id="X"><s:DataStructureComponents><s:DimensionList>
+<s:Dimension id="geo" position="1"><s:LocalRepresentation><s:Enumeration><Ref id="GEO"/></s:Enumeration></s:LocalRepresentation></s:Dimension>
+<s:TimeDimension id="TIME_PERIOD" position="2"/></s:DimensionList></s:DataStructureComponents></s:DataStructure></s:DataStructures>
+</m:Structures></m:Structure>"""
+
+
+def test_eurostat_structure_parse_prefers_english_and_validates_filters():
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from iceland_context_mcp.eurostat import parse_structure, validate_filters
+
+    structure = parse_structure("x", STRUCTURE_SAMPLE)
+    assert structure.title == "HICP"
+    geo, time = structure.dimensions
+    assert geo.codes == {"IS": "Iceland", "DE": "Germany"} and time.is_time
+    validate_filters(structure, {"geo": "IS+DE"})
+    for bad in ({"geo": "ZZ"}, {"nope": "IS"}):
+        try:
+            validate_filters(structure, bad)
+            assert False, "expected ToolError"
+        except ToolError:
+            pass
+
+
+def test_eurostat_jsonstat_decode_last_dimension_varies_fastest_with_flags_and_gaps():
+    from iceland_context_mcp.open_data import decode_eurostat_jsonstat
+
+    # geo (DE, IS) x time (2025-11, 2025-12): flat index = geo_pos * 2 + time_pos.
+    data = {
+        "id": ["geo", "time"],
+        "size": [2, 2],
+        "dimension": {
+            "geo": {"category": {"index": {"DE": 0, "IS": 1}, "label": {"DE": "Germany", "IS": "Iceland"}}},
+            "time": {"category": {"index": {"2025-11": 0, "2025-12": 1}, "label": {"2025-11": "2025-11", "2025-12": "2025-12"}}},
+        },
+        "value": {"0": 132.6, "1": 132.8, "3": 133.36},
+        "status": {"1": "p", "2": ":"},
+    }
+    observations, total = decode_eurostat_jsonstat(data)
+    got = {(o.dimensions["geo"], o.dimensions["time"]): (o.value, o.flag) for o in observations}
+    assert total == 4
+    assert got[("Germany", "2025-12")] == (132.8, "p")
+    assert got[("Iceland", "2025-11")] == (None, ":")  # flagged as not available, no value
+    assert got[("Iceland", "2025-12")] == (133.36, None)

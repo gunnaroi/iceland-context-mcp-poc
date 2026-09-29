@@ -40,9 +40,9 @@ dashboard, no Playwright/JS rendering. Implemented so far (`context://iceland-da
 | Tool | Covers |
 |---|---|
 | `get_geodata(source_key, layer, ...)` | `umferd` (traffic counters), `fiskistofa` (fishing closures), `ust-gis` (contaminated land), `lmi` (national topographic/admin geodata), `natt` (Náttúrufræðistofnun vector layers) — one generic WFS client for all five |
-| `get_hagstofa_table(table_path, filters)` / `browse_hagstofa_tables(path)` | `hagstofan` (any PX-Web table, discoverable by walking the folder catalog) and `income-distribution` (TEK01001 is just another table path) |
+| `search_hagstofa_tables(query)` → `get_hagstofa_table_info(table_path)` → `get_hagstofa_table_tool(table_path, filters, last_n_periods)`; `browse_hagstofa_tables(path)` | `hagstofan` (any PX-Web table, discoverable by walking the folder catalog) and `income-distribution` (TEK01001 is just another table path) |
 | `get_vehicle(search)` | `car` — exact plate/VIN lookup |
-| `get_eurostat_series(dataset, filters)` | `eurostat` — EU/euro-area comparison series |
+| `search_eurostat_datasets_tool(query)` → `get_eurostat_dataset_info(dataset)` / `get_eurostat_dimension_values(dataset, dimension)` → `get_eurostat_series_tool(dataset, filters, since_period, until_period, last_n_periods)` | `eurostat` — EU/euro-area comparison series, with catalogue search and dimension discovery |
 | `get_weather_observations` / `get_earthquakes` | `vedur` |
 | `get_air_quality(date, station_local_id)` | `loftgaedi` |
 | `get_bond(orderbook_id)` | `lanamal` — RIKB/RIKS government bond yields |
@@ -302,6 +302,8 @@ Keep the MCP tool surface stable while swapping brittle HTML adapters for suppor
 - `search_court_rulings`: the `court` filter is confirmed reliable only for `"Hæstiréttur"` — `"Landsréttur"` or a héraðsdómur name silently returns zero results even though those exact strings appear in the returned data. Filter by court client-side for anything but Hæstiréttur.
 - `get_court_ruling`: full text is structured `richText` for some rulings (mainly recent Hæstiréttur) and a PDF (extracted via `pdfplumber`) for others — check `text_source` on the result.
 - `search_stjornartidindi`: the upstream GraphQL resolver returns a 500 error if `dateFrom`/`dateTo` are sent as explicit `null` rather than omitted — this tool omits the keys entirely when unset.
+- Hagstofa catalogue search: PX-Web v1 (the only version on `px.hagstofa.is`; `/api/v2` returns 404) has no search endpoint, so `search_hagstofa_tables` searches a locally cached crawl of the whole folder tree (413 folders, 2,102 tables). The crawl has to be sequential with ~0.3 s spacing — concurrent requests get HTTP 429. The packaged seed (`hagstofa_catalog.json`, rebuild with `iceland-context-hagstofa-crawl`) is used at start; a background re-crawl refreshes it into `~/.cache/iceland-context-mcp/` (override with `ICELAND_MCP_CACHE_DIR`) when it is more than 14 days old, and a partial crawl never replaces a good snapshot. Selections over 100,000 cells are refused with HTTP 403 (measured 94,770 OK / 101,088 rejected).
+- Eurostat: an unknown filter *value* is silently treated as "no filter" (e.g. `geo=ZZ` → "extraction too big"), so `get_eurostat_series_tool` validates filters against the dataset's SDMX codelists first. json-stat2 flat indices vary fastest in the *last* dimension; earlier versions of this server decoded them with the first dimension fastest, which mislabelled multi-dimension results (single-series queries were unaffected).
 - `get_hagstofa_table`: PX-Web folder paths are exact Icelandic abbreviations with no fuzzy matching — a guessed or partial path (including a bare table filename with the folders left off) fails outright, so callers must discover the path via `browse_hagstofa_tables` rather than guessing from a table's title or code. Separately, some tables' CSV response declares `charset=Windows-1252` in `Content-Type` while the body is actually UTF-8 with a BOM — this tool checks for the BOM before trusting the declared charset.
 
 ## License

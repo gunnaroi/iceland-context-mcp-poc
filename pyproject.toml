@@ -22,6 +22,7 @@ dev = ["pytest>=8,<9", "pytest-asyncio>=0.24,<1"]
 [project.scripts]
 iceland-context-mcp = "iceland_context_mcp.server:main"
 iceland-context-bootstrap = "iceland_context_mcp.indexer:main"
+iceland-context-hagstofa-crawl = "iceland_context_mcp.hagstofa_catalog:main"
 
 [build-system]
 requires = ["hatchling"]
