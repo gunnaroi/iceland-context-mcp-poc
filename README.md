@@ -158,6 +158,14 @@ It demonstrates the hard part of the idea with publicly observable material:
 4. a clean separation between **discovery** and **authoritative retrieval**;
 5. an MCP interface that can later sit on top of better supported feeds without changing the tool contract.
 
+## Icelandic statistics as a Claude skill
+
+`skill/iceland-statistics/` packages the statistics half of this project (Hagstofa search/inspect/fetch with the cached
+2,102-table catalogue, Eurostat comparison, SDG indicators) as a self-contained Claude skill: `SKILL.md` plus a CLI
+(`scripts/iceland_stats.py`, needs only `httpx`, `pydantic`, `lxml`) and a vendored copy of the relevant modules. It
+needs no MCP connection. `skill/iceland-statistics.skill` is the ready-to-install package; regenerate the vendored code
+and tool reference after changing the package with `uv run python skill/build.py`.
+
 ## Requirements
 
 - Python 3.10+

@@ -546,3 +546,44 @@ def test_friendly_errors_convert_value_and_http_errors():
     assert "example.org" in str(_friendly(httpx.HTTPStatusError("x", request=response.request, response=response)))
     assert isinstance(_friendly(httpx.ReadTimeout("t")), ToolError)
     assert _friendly(KeyError("bug")) is None  # genuine bugs must still surface as crashes
+
+
+def test_hagstofa_send_waits_out_rate_limit(monkeypatch):
+    import asyncio
+
+    import httpx
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from iceland_context_mcp import open_data
+
+    slept: list[float] = []
+
+    async def fake_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(open_data.asyncio, "sleep", fake_sleep)
+
+    def make_client(statuses):
+        calls = iter(statuses)
+
+        def handler(request):
+            return httpx.Response(next(calls), json={"ok": True})
+
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def recovered():
+        async with make_client([429, 429, 200]) as client:
+            return await open_data._hagstofa_send(client, "GET", "https://example.org/x")
+
+    assert asyncio.run(recovered()).status_code == 200
+    assert slept == [2.0, 4.0]
+
+    async def never_recovers():
+        async with make_client([429] * 4) as client:
+            await open_data._hagstofa_send(client, "GET", "https://example.org/x")
+
+    try:
+        asyncio.run(never_recovers())
+        assert False, "expected ToolError"
+    except ToolError as e:
+        assert "rate-limiting" in str(e)

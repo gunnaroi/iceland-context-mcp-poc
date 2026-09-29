@@ -1,0 +1,23 @@
+{
+  "skill_name": "iceland-statistics",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "How has annual consumer price inflation in Iceland developed over the last 24 months, and how does it compare with the euro area over the same period? Give me the actual monthly figures and cite where they come from.",
+      "expected_output": "Icelandic CPI/HICP from Hagstofa/Eurostat, euro-area HICP, aligned months, only fetched numbers, definition caveats.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "Hvað bjuggu margir í Reykjavík, Kópavogi og Hafnarfirði 1. janúar á hverju ári síðustu 10 árin? Sýndu tölurnar í töflu og segðu mér hvaðan þær koma.",
+      "expected_output": "Population of three municipalities for the last 10 years from a Hagstofa table found via search, answer in Icelandic with table path and retrieval date, only fetched numbers.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "Show me the number of foreign visitors departing through Keflavík airport month by month for the last 12 months and the same months a year earlier, with the percentage change, using official Icelandic statistics. Note any gaps or provisional data.",
+      "expected_output": "Monthly Keflavík departures from an official Hagstofa table for the last 12 months and the prior-year months, percentage change labelled as own calculation, caveats on freshness and definitions.",
+      "files": []
+    }
+  ]
+}
