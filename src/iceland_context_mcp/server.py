@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import inspect
 import os
 
+import httpx
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from .models import (
     BillDocumentResult,
@@ -13,6 +17,7 @@ from .models import (
     EeaCombinedResult,
     EeaResult,
     EurLexActResult,
+    LawEditionsResult,
     LawResult,
     LawSearchResult,
     RegulationResult,
@@ -86,6 +91,15 @@ from .open_data import (
     search_tenders,
     search_webservices,
 )
+from .eurlex import (
+    EuLookupResult,
+    EuRelationsResult,
+    EuSearchResult,
+    get_eu_act_relations,
+    lookup_eu_act,
+    search_eu_case_law,
+    search_eu_legislation,
+)
 from .search import search_laws as search_laws_index
 from .sources import (
     fetch_bill,
@@ -95,6 +109,7 @@ from .sources import (
     fetch_efta,
     fetch_eur_lex_act,
     fetch_law,
+    list_law_editions as fetch_law_editions,
     fetch_regulation,
     fetch_stjornartidindi_advert,
     registry_record,
@@ -139,6 +154,10 @@ Mandatory interpretation rules:
     get_earthquakes/get_air_quality/get_bond tools ARE live retrieval, unlike rule 11's resources — but
     this data is not legal/EEA in nature, so it carries no authority-class and this server makes no legal
     claim about it. See context://iceland-data/registry for source notes and known upstream quirks.
+    For EU law: lookup_eu_act_tool turns a citation into a CELEX; search_eu_legislation_tool/search_eu_case_law_tool
+    find acts and CJEU judgments by subject; get_eu_act_relations_tool gives amendments/repeals/consolidated
+    versions — EU-level facts only, never Icelandic applicability. For what an Icelandic law said on a past date use
+    get_law(as_of=...), which resolves to the Lagasafn edition on or before that date (see list_law_editions).
     For Icelandic statistics start with search_hagstofa_tables -> get_hagstofa_table_info -> get_hagstofa_table_tool;
     for EU comparisons search_eurostat_datasets_tool -> get_eurostat_dataset_info -> get_eurostat_series_tool. Never
     guess table paths, dataset codes or filter values — the discovery tools exist because guesses fail.
@@ -159,6 +178,57 @@ mcp = MCPServer(
     instructions=SERVER_INSTRUCTIONS,
     version="0.1.0",
 )
+
+
+def _friendly(exc: Exception) -> ToolError | None:
+    """Turn expected failures into a ToolError: the SDK shows the model only a bare "Error executing tool X"
+    for any other exception, which leaves it nothing to correct and invites blind retries with guesses."""
+    if isinstance(exc, ValueError):
+        return ToolError(str(exc))
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        return ToolError(
+            f"The upstream source ({response.url.host}) answered HTTP {response.status_code} for this request. "
+            "Check the identifiers/parameters; if they are right the source may be temporarily unavailable."
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return ToolError("The upstream source did not answer in time. Retry, ideally with a narrower request.")
+    if isinstance(exc, httpx.TransportError):
+        return ToolError("Could not reach the upstream source (network error). Retry shortly.")
+    return None
+
+
+def _tool():
+    """`@mcp.tool()` plus conversion of expected upstream/validation errors to model-visible ToolErrors."""
+
+    def decorator(fn):
+        if inspect.iscoroutinefunction(fn):
+
+            @functools.wraps(fn)
+            async def wrapper(*args, **kwargs):
+                try:
+                    return await fn(*args, **kwargs)
+                except Exception as exc:
+                    friendly = _friendly(exc)
+                    if friendly is None:
+                        raise
+                    raise friendly from exc
+
+        else:
+
+            @functools.wraps(fn)
+            def wrapper(*args, **kwargs):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:
+                    friendly = _friendly(exc)
+                    if friendly is None:
+                        raise
+                    raise friendly from exc
+
+        return mcp.tool()(wrapper)
+
+    return decorator
 
 
 @mcp.resource("context://iceland/interpretation-rules")
@@ -195,31 +265,47 @@ def data_skill_resource(name: str) -> str:
     return attribution_header(skill.name) + skill.body
 
 
-@mcp.tool()
+@_tool()
 def list_sources() -> SourceRegistryResult:
     """List public Icelandic/EEA sources known to the PoC with authority classification and use notes."""
     return SourceRegistryResult(sources=registry_records())
 
 
-@mcp.tool()
+@_tool()
 def get_source(source_key: str) -> SourceRecord:
     """Get provenance/authority guidance for one source key returned by list_sources."""
     return registry_record(source_key)
 
 
-@mcp.tool()
-async def get_law(year: int, number: int) -> LawResult:
-    """Retrieve the live current consolidated Lagasafn page for a law identified by year and law number."""
-    return await fetch_law(year, number)
+@_tool()
+async def get_law(year: int, number: int, as_of: str | None = None) -> LawResult:
+    """Retrieve the consolidated Lagasafn text of a law identified by year and law number.
+
+    Without `as_of` you get the live current text. With `as_of='YYYY-MM-DD'` you get the law as published in
+    the latest Lagasafn edition on or before that date — for questions about what the law said at a past
+    date (e.g. when a contract was signed or a ruling issued). Amendments enacted after that edition's date
+    are not reflected, so the returned `edition_date` can be earlier than `as_of`; see list_law_editions.
+    A law enacted after the edition, or repealed before it, is reported as absent from that edition.
+    """
+    return await fetch_law(year, number, as_of)
 
 
-@mcp.tool()
+@_tool()
+async def list_law_editions() -> LawEditionsResult:
+    """List the numbered Lagasafn editions Althingi has published (newest first, with dates).
+
+    Use to see which dates get_law(as_of=...) can resolve to, and how far back point-in-time law text goes.
+    """
+    return await fetch_law_editions()
+
+
+@_tool()
 def search_laws(query: str, limit: int = 8) -> LawSearchResult:
     """Search the local discovery index built from the latest available Alþingi Lagasafn SGML snapshot."""
     return search_laws_index(query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_regulation(number: int, year: int, view: str = "current") -> RegulationResult:
     """Retrieve an Icelandic regulation (reglugerð) by number and year from the official register.
 
@@ -231,7 +317,7 @@ async def get_regulation(number: int, year: int, view: str = "current") -> Regul
     return await fetch_regulation(number, year, view)
 
 
-@mcp.tool()
+@_tool()
 async def search_regulations(query: str, limit: int = 10) -> RegulationSearchResult:
     """Free-text search over the official regulation register.
 
@@ -241,7 +327,7 @@ async def search_regulations(query: str, limit: int = 10) -> RegulationSearchRes
     return await search_regulations_source(query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_bill(malnr: int, thing: int | None = None, malsflokkur: str = "A") -> BillResult:
     """Retrieve an Alþingi parliamentary matter (bill/resolution/question) by number.
 
@@ -254,7 +340,7 @@ async def get_bill(malnr: int, thing: int | None = None, malsflokkur: str = "A")
     return await fetch_bill(malnr, thing, malsflokkur)
 
 
-@mcp.tool()
+@_tool()
 async def get_bill_document(thing: int, document_number: int) -> BillDocumentResult:
     """Retrieve the full text of one Alþingi þingskjal (a document_number from a BillResult's documents list).
 
@@ -270,7 +356,7 @@ async def get_bill_document(thing: int, document_number: int) -> BillDocumentRes
     return await fetch_bill_document(thing, document_number)
 
 
-@mcp.tool()
+@_tool()
 async def search_stjornartidindi(
     query: str | None = None,
     department: str | None = None,
@@ -287,7 +373,7 @@ async def search_stjornartidindi(
     return await search_stjornartidindi_source(query, department, date_from, date_to, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_stjornartidindi_advert(advert_id: str) -> StjornartidindiAdvertResult:
     """Retrieve one Stjórnartíðindi advert's full text by id (from search_stjornartidindi).
 
@@ -297,7 +383,7 @@ async def get_stjornartidindi_advert(advert_id: str) -> StjornartidindiAdvertRes
     return await fetch_stjornartidindi_advert(advert_id)
 
 
-@mcp.tool()
+@_tool()
 async def search_court_rulings(
     query: str | None = None,
     court: str | None = None,
@@ -325,7 +411,7 @@ async def search_court_rulings(
     return await search_court_rulings_source(query, court, date_from, date_to, law_citation, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_court_ruling(ruling_id: str) -> CourtRulingResult:
     """Retrieve one court ruling's full text by id (from search_court_rulings).
 
@@ -336,7 +422,7 @@ async def get_court_ruling(ruling_id: str) -> CourtRulingResult:
     return await fetch_court_ruling(ruling_id)
 
 
-@mcp.tool()
+@_tool()
 async def get_eur_lex_act(celex: str, language: str = "en") -> EurLexActResult:
     """Retrieve an EU act's official text and metadata by CELEX identifier from the Publications Office's CELLAR repository.
 
@@ -348,19 +434,85 @@ async def get_eur_lex_act(celex: str, language: str = "en") -> EurLexActResult:
     return await fetch_eur_lex_act(celex, language)
 
 
-@mcp.tool()
+@_tool()
+async def lookup_eu_act_tool(citation: str) -> EuLookupResult:
+    """Resolve an EU act citation to its CELEX number, title, date and EU in-force status.
+
+    Accepts a CELEX number, an ELI URI, or the way acts are cited in text: 'Regulation (EU) 2016/679',
+    'Directive 2000/31/EC', 'Regulation (EC) No 1049/2001', 'Council Framework Decision 2002/584/JHA'. Use it
+    whenever a document (an Icelandic reglugerð, an EEA decision, a court ruling) cites an EU act by name and
+    you need its CELEX for get_eur_lex_act, get_eu_act_relations or get_iceland_eea_status. in_force is EU-level
+    status only — nothing about Icelandic applicability.
+    """
+    return await lookup_eu_act(citation)
+
+
+@_tool()
+async def search_eu_legislation_tool(
+    keyword: str,
+    act_type: str | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    in_force_only: bool = False,
+    limit: int = 15,
+) -> EuSearchResult:
+    """Search EU legislation (regulations, directives, decisions) by words in the English title, newest first.
+
+    All words must appear (e.g. 'artificial intelligence', 'data protection'). Optional filters: act_type
+    ('regulation' | 'directive' | 'decision'), year_from/year_to, in_force_only. Consolidated texts and
+    corrigenda are excluded from results — find those with get_eu_act_relations. This searches EU law only;
+    whether and how an act applies in Iceland is a separate question (see get_iceland_eea_status).
+    """
+    return await search_eu_legislation(keyword, act_type, year_from, year_to, in_force_only, limit)
+
+
+@_tool()
+async def search_eu_case_law_tool(
+    case_number: str | None = None,
+    keyword: str | None = None,
+    court: str | None = None,
+    year_from: int | None = None,
+    year_to: int | None = None,
+    limit: int = 15,
+) -> EuSearchResult:
+    """Search Court of Justice (CJEU) and General Court case-law by case number and/or title words, newest first.
+
+    case_number like 'C-131/12' (Court of Justice), 'T-22/20' (General Court) or old-style '26/62' returns every
+    document of that case (judgment, Advocate General opinion, orders) with ECLI. keyword matches party/subject
+    words in titles (e.g. 'Google Spain', 'data protection'); court is 'CJEU' or 'GC'. CJEU rulings bind EU
+    member states; for Iceland (EEA) the EFTA Court and the EEA Agreement's homogeneity rules are what
+    matter — EU case-law is persuasive context, not binding Icelandic law.
+    """
+    return await search_eu_case_law(case_number, keyword, court, year_from, year_to, limit)
+
+
+@_tool()
+async def get_eu_act_relations_tool(celex: str, relation: str | None = None, limit: int = 15) -> EuRelationsResult:
+    """Show how an EU act connects to other acts: amendments, repeals, legal basis, consolidated versions, corrigenda, case-law.
+
+    Without `relation` you get every relation with its count and the first few items for the status-related
+    ones (amended_by, repealed_by, repeals, amends, legal_basis, consolidated_versions, corrigenda). Pass
+    relation=<name> (also: acts_based_on_this, case_law_interpreting, national_implementing_measures, cited_by,
+    cites) with a larger `limit` for the full list. To read an act as currently amended, take the newest
+    `consolidated_versions` CELEX (starts with 0, e.g. 02016R0679-20160504) and pass it to get_eur_lex_act.
+    EU-level relationships only; Icelandic incorporation is tracked by get_iceland_eea_status.
+    """
+    return await get_eu_act_relations(celex, relation, limit)
+
+
+@_tool()
 async def get_iceland_eea_status(celex: str) -> EeaResult:
     """Retrieve public EES-gagnagrunnur evidence for a CELEX identifier, preserving source and status warnings."""
     return await fetch_ees(celex)
 
 
-@mcp.tool()
+@_tool()
 async def get_efta_eea_factsheet(celex: str) -> EeaResult:
     """Retrieve the public EFTA EEA-Lex factsheet for a CELEX identifier. Treat it as EEA context, not domestic Icelandic law."""
     return await fetch_efta(celex)
 
 
-@mcp.tool()
+@_tool()
 async def trace_eea_public_context(celex: str) -> EeaCombinedResult:
     """Retrieve both Icelandic EES-gagnagrunnur and EFTA EEA-Lex public context for a CELEX identifier."""
     iceland, efta = await asyncio.gather(fetch_ees(celex), fetch_efta(celex), return_exceptions=True)
@@ -380,7 +532,7 @@ def open_data_registry_resource() -> str:
     return "\n\n".join(lines)
 
 
-@mcp.tool()
+@_tool()
 async def get_geodata_tool(
     source_key: str, layer: str, cql_filter: str | None = None, srs: str = "EPSG:4326", limit: int = 50
 ) -> GeoDataResult:
@@ -394,7 +546,7 @@ async def get_geodata_tool(
     return await get_geodata(source_key, layer, cql_filter, srs, limit)
 
 
-@mcp.tool()
+@_tool()
 async def search_hagstofa_tables(query: str, limit: int = 15) -> HagstofaSearchResult:
     """Keyword-search Hagstofa Íslands' ~2,100 statistical tables (the fastest way to find a table path).
 
@@ -409,9 +561,9 @@ async def search_hagstofa_tables(query: str, limit: int = 15) -> HagstofaSearchR
     return await search_hagstofa_catalog(query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_hagstofa_table_info(
-    table_path: str, variable: str | None = None, query: str | None = None, limit: int = 50
+    table_path: str, variable: str | None = None, query: str | None = None, limit: int = 50, language: str = "is"
 ) -> HagstofaTableInfo:
     """Inspect one Hagstofa table before querying it: its variables, how many values each has, and sample values.
 
@@ -419,14 +571,19 @@ async def get_hagstofa_table_info(
     variable with a few sample values (for the time variable: first 2 and last 4 periods, so you can see how
     recent the data is). To see the valid codes for one variable, pass `variable` (its code) and optionally
     `query` to filter values by substring — e.g. variable='Sveitarfélag', query='Reykjav'. `total_cells` is
-    the size of an unfiltered query; Hagstofa rejects selections over 100,000 cells.
+    the size of an unfiltered query; Hagstofa rejects selections over 100,000 cells (or 5,000 selected values).
+    `language='en'` returns English variable codes/labels for tables that have an English edition (search hits
+    with `title_en`); note the variable codes differ between languages, so use one language throughout.
     """
-    return await fetch_hagstofa_table_info(table_path, variable, query, limit)
+    return await fetch_hagstofa_table_info(table_path, variable, query, limit, language)
 
 
-@mcp.tool()
+@_tool()
 async def get_hagstofa_table_tool(
-    table_path: str, filters: dict[str, list[str]] | None = None, last_n_periods: int | None = None
+    table_path: str,
+    filters: dict[str, list[str]] | None = None,
+    last_n_periods: int | None = None,
+    language: str = "is",
 ) -> StatTableResult:
     """Fetch data from a Hagstofa Íslands (Statistics Iceland) PX-Web table.
 
@@ -439,15 +596,16 @@ async def get_hagstofa_table_tool(
     are summed away when the table allows it). `last_n_periods` returns only the latest N periods of the
     table's time variable — use it instead of filtering time, and to keep large tables under Hagstofa's
     100,000-cell limit. Errors list the valid variables/values. Values are as published — check the
-    table's own units/scale (e.g. thousands of ISK). Verified example: CPI (vísitala neysluverðs, monthly since
+    table's own units/scale (e.g. thousands of ISK). `language='en'` gives English column names/labels (and
+    English variable codes) for tables with an English edition. Verified example: CPI (vísitala neysluverðs, monthly since
     1988) is 'Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px'. Unrelated to this PoC's legal/EEA tools; no
     authority-class/provenance.
     """
-    return await get_hagstofa_table(table_path, filters, last_n_periods)
+    return await get_hagstofa_table(table_path, filters, last_n_periods, language)
 
 
-@mcp.tool()
-async def browse_hagstofa_tables(path: str = "") -> HagstofaBrowseResult:
+@_tool()
+async def browse_hagstofa_tables(path: str = "", language: str = "is") -> HagstofaBrowseResult:
     """Browse Hagstofa Íslands' PX-Web folder tree one level at a time (alternative to search_hagstofa_tables).
 
     Prefer search_hagstofa_tables when you know what you are looking for; browse when exploring what
@@ -456,10 +614,10 @@ async def browse_hagstofa_tables(path: str = "") -> HagstofaBrowseResult:
     entries appear. Pass a table's `full_path` verbatim to get_hagstofa_table_info/get_hagstofa_table_tool.
     Unrelated to this PoC's legal/EEA tools.
     """
-    return await browse_hagstofa(path)
+    return await browse_hagstofa(path, language)
 
 
-@mcp.tool()
+@_tool()
 async def get_vehicle_tool(search: str) -> VehicleResult:
     """Look up one Icelandic vehicle by exact plate number or VIN via the island.is public registry.
 
@@ -469,7 +627,7 @@ async def get_vehicle_tool(search: str) -> VehicleResult:
     return await get_vehicle(search)
 
 
-@mcp.tool()
+@_tool()
 async def search_eurostat_datasets_tool(query: str, limit: int = 15) -> EurostatSearchResult:
     """Keyword-search Eurostat's ~8,900 datasets by title, code or theme (e.g. 'hicp inflation', 'unemployment').
 
@@ -481,7 +639,7 @@ async def search_eurostat_datasets_tool(query: str, limit: int = 15) -> Eurostat
     return await search_eurostat_catalog(query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_eurostat_dataset_info(dataset: str) -> EurostatDatasetInfo:
     """List an Eurostat dataset's dimensions (in order), how many codes each has, and sample codes.
 
@@ -491,7 +649,7 @@ async def get_eurostat_dataset_info(dataset: str) -> EurostatDatasetInfo:
     return await describe_eurostat_dataset(dataset)
 
 
-@mcp.tool()
+@_tool()
 async def get_eurostat_dimension_values(dataset: str, dimension: str, query: str | None = None, limit: int = 60) -> EurostatDimensionValues:
     """List the valid codes and labels of one dimension of an Eurostat dataset, optionally filtered by `query`.
 
@@ -501,7 +659,7 @@ async def get_eurostat_dimension_values(dataset: str, dimension: str, query: str
     return await list_eurostat_dimension_values(dataset, dimension, query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_eurostat_series_tool(
     dataset: str,
     filters: dict[str, str] | None = None,
@@ -522,7 +680,7 @@ async def get_eurostat_series_tool(
     return await get_eurostat_series(dataset, filters, since_period, until_period, last_n_periods)
 
 
-@mcp.tool()
+@_tool()
 async def get_weather_observations_tool(aggregation: str = "10min", station_id: int | None = None) -> WeatherObservationsResult:
     """Latest Icelandic Met Office (Veðurstofa) automatic-weather-station observations.
 
@@ -531,7 +689,7 @@ async def get_weather_observations_tool(aggregation: str = "10min", station_id: 
     return await get_weather_observations(aggregation, station_id)
 
 
-@mcp.tool()
+@_tool()
 async def get_earthquakes_tool(start_time: str, size_min: float | None = None, limit: int = 100) -> EarthquakeResult:
     """Icelandic seismic events (IMO) from a start time (yyyy-mm-ddTHH:MM:SS) onward, optionally filtered by magnitude.
 
@@ -541,7 +699,7 @@ async def get_earthquakes_tool(start_time: str, size_min: float | None = None, l
     return await get_earthquakes(start_time, size_min, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_air_quality_tool(date: str | None = None, station_local_id: str | None = None) -> AirQualityResult:
     """Icelandic air quality readings (PM10/PM2.5/NO2/H2S/...) — latest, one station's latest, or all stations for one date (YYYY-MM-DD).
 
@@ -551,7 +709,7 @@ async def get_air_quality_tool(date: str | None = None, station_local_id: str | 
     return await get_air_quality(date, station_local_id)
 
 
-@mcp.tool()
+@_tool()
 async def get_bond_tool(orderbook_id: str) -> BondResult:
     """Icelandic government bond (RIKB/RIKS) market data by orderbook id, e.g. 'RIKB_31_0124'.
 
@@ -561,7 +719,7 @@ async def get_bond_tool(orderbook_id: str) -> BondResult:
     return await get_bond(orderbook_id)
 
 
-@mcp.tool()
+@_tool()
 async def get_rikisreikningur_summary_tool() -> RikisreikningurSummary:
     """Yearly Icelandic government-wide surplus/deficit and revenue/expense split (state accounts actuals).
 
@@ -570,7 +728,7 @@ async def get_rikisreikningur_summary_tool() -> RikisreikningurSummary:
     return await get_rikisreikningur_summary()
 
 
-@mcp.tool()
+@_tool()
 async def get_rikisreikningur_malefni_tool() -> RikisreikningurMalefniResult:
     """Icelandic state accounts actuals broken down by málefnasvið (policy area), year and revenue/expense type.
 
@@ -582,7 +740,7 @@ async def get_rikisreikningur_malefni_tool() -> RikisreikningurMalefniResult:
     return await get_rikisreikningur_malefni()
 
 
-@mcp.tool()
+@_tool()
 async def search_government_invoices(
     date_from: str, date_to: str, org_id: str | None = None, limit: int = 100
 ) -> InvoiceSearchResult:
@@ -595,13 +753,13 @@ async def search_government_invoices(
     return await search_invoices(date_from, date_to, org_id, limit)
 
 
-@mcp.tool()
+@_tool()
 async def search_invoice_orgs_tool(term: str) -> OrgSearchResult:
     """Autocomplete an Icelandic government organisation name to its org_id, for use with search_government_invoices."""
     return await search_invoice_orgs(term)
 
 
-@mcp.tool()
+@_tool()
 async def search_planning_minutes_tool(query: str, limit: int = 20) -> PlanningSearchResult:
     """Full-text search across Icelandic municipal planning/building-committee meeting minutes.
 
@@ -611,13 +769,13 @@ async def search_planning_minutes_tool(query: str, limit: int = 20) -> PlanningS
     return await search_planning_minutes(query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_nearby_planning_cases_tool(lat: float, lon: float, radius_m: int = 500, limit: int = 100) -> NearbyCasesResult:
     """Find Icelandic planning/building cases near a coordinate (Reykjavík/Hafnarfjörður/Árborg only)."""
     return await get_nearby_planning_cases(lat, lon, radius_m, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_sdg_indicator_tool(code: str, lang: str = "is") -> SdgIndicatorResult:
     """Fetch one Icelandic UN Sustainable Development Goal indicator's full time series by code (e.g. '1-1-1', '16-b-1').
 
@@ -626,7 +784,7 @@ async def get_sdg_indicator_tool(code: str, lang: str = "is") -> SdgIndicatorRes
     return await get_sdg_indicator(code, lang)
 
 
-@mcp.tool()
+@_tool()
 async def search_tenders_tool(
     query: str = "organisation-country-buyer=ISL", fields: list[str] | None = None, limit: int = 20, page: int = 1
 ) -> TenderSearchResult:
@@ -639,7 +797,7 @@ async def search_tenders_tool(
     return await search_tenders(query, fields, limit, page)
 
 
-@mcp.tool()
+@_tool()
 async def search_eea_datasets_tool(query: str, limit: int = 10) -> EeaCatalogueSearchResult:
     """Search the European Environment Agency's geospatial dataset catalogue (~10k datasets: CORINE, Copernicus
     HRL, Natura 2000, etc.) by title keyword. Catalogue search only — does not fetch the underlying (often
@@ -648,7 +806,7 @@ async def search_eea_datasets_tool(query: str, limit: int = 10) -> EeaCatalogueS
     return await search_eea_datasets(query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_fx_rate_tool(date: str = "latest", base: str = "EUR", symbols: str | None = None) -> FxRateResult:
     """ECB daily reference exchange rates (interbank, not consumer card rates) for a date ('latest' or YYYY-MM-DD).
 
@@ -657,7 +815,7 @@ async def get_fx_rate_tool(date: str = "latest", base: str = "EUR", symbols: str
     return await get_fx_rate(date, base, symbols)
 
 
-@mcp.tool()
+@_tool()
 async def search_webservices_tool(query: str = "", limit: int = 20) -> ApiCatalogueSearchResult:
     """Search registered web services on Straumur/api.island.is (X-Road service directory).
 
@@ -673,7 +831,7 @@ async def search_webservices_tool(query: str = "", limit: int = 20) -> ApiCatalo
     return await search_webservices(query, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_webservice_details_tool(service_id: str) -> WebserviceDetail:
     """Full metadata for one service from search_webservices_tool: owner, access path, data sensitivity,
     contact person/email and documentation link (when the service has published OpenAPI docs).
@@ -685,7 +843,7 @@ async def get_webservice_details_tool(service_id: str) -> WebserviceDetail:
     return await get_webservice_details(service_id)
 
 
-@mcp.tool()
+@_tool()
 async def list_service_endpoints_tool(service_id: str) -> ServiceEndpointsResult:
     """List the operations (path, HTTP method, summary) a service's own published OpenAPI spec documents.
 
@@ -696,7 +854,7 @@ async def list_service_endpoints_tool(service_id: str) -> ServiceEndpointsResult
     return await list_service_endpoints(service_id)
 
 
-@mcp.tool()
+@_tool()
 async def get_service_openapi_spec_tool(service_id: str) -> ServiceOpenApiSpecResult:
     """Full OpenAPI 3.0 document for one service, as registered on island.is — useful for generating
     client stubs against a service you already have X-Road access to.
@@ -708,7 +866,7 @@ async def get_service_openapi_spec_tool(service_id: str) -> ServiceOpenApiSpecRe
     return await get_service_openapi_spec(service_id)
 
 
-@mcp.tool()
+@_tool()
 async def search_island_content_tool(query: str, lang: str = "is", limit: int = 10) -> ContentSearchResult:
     """Search island.is's public guidance content: how-to articles, life events, organization pages
     (e.g. "how do I apply for a passport", "what does Þjóðskrá do").
@@ -721,7 +879,7 @@ async def search_island_content_tool(query: str, lang: str = "is", limit: int = 
     return await search_island_content(query, lang, limit)
 
 
-@mcp.tool()
+@_tool()
 async def get_island_article_tool(slug: str, lang: str = "is") -> ArticleResult:
     """Full text (as Markdown) of one island.is guidance article — fees, deadlines, required documents,
     procedure steps, as actually published, not a summary.

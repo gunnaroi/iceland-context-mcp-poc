@@ -9,7 +9,7 @@ It implements the principle that the MCP server is a **read-only routing/retriev
 The first version exposes:
 
 - a small **source registry** with authority/use classifications;
-- `get_law(year, number)` — live current consolidated Lagasafn retrieval;
+- `get_law(year, number, as_of)` — consolidated Lagasafn text: live current by default, or point-in-time with `as_of='YYYY-MM-DD'` (resolves to the latest of Alþingi's 70 published editions, 1995–today, on or before that date; amendments after the edition date are not reflected, and the result says so); `list_law_editions()` shows the available editions;
 - `search_laws(query)` — optional local full-text discovery index built from the latest public Alþingi SGML snapshot;
 - `get_regulation(number, year, view)` — official reglugerð register (current or as-originally-published text), with amendment history and a best-effort extraction of the regulation's stated legal basis (enabling law);
 - `search_regulations(query)` — free-text search over the regulation register;
@@ -17,7 +17,8 @@ The first version exposes:
 - `get_bill_document(thing, document_number)` — full text of one þingskjal from that trail (HTML normally, falling back to the document's own PDF when there's no inline text — e.g. fjárlög, the state budget, which is itself legislation and PDF-only; useful for reading the bill's own legislative text, but for structured appropriation figures prefer [fjarlog-mcp](https://github.com/gunnaroi/fjarlog) — see "Remaining sources" below);
 - `search_court_rulings(query, court, date_from, date_to, law_citation)` / `get_court_ruling(id)` — court rulings (héraðsdómur/Landsréttur/Hæstiréttur) via the unified island.is verdict register, each carrying a court-level authority_class (C1/C2/C3) reflecting precedential weight; `law_citation` filters by a curated whole-law citation tag;
 - `search_stjornartidindi(query, department, date_from, date_to)` / `get_stjornartidindi_advert(id)` — Stjórnartíðindi (the official promulgation record), via the same island.is GraphQL backend as the court/regulation tools;
-- `get_eur_lex_act(celex, language)` — official EU act text and metadata via the public CELLAR SPARQL + REST endpoints (no API key) — the EU-law side of the chain;
+- `get_eur_lex_act(celex, language)` — official EU act text and metadata via the public CELLAR SPARQL + REST endpoints (no API key) — the EU-law side of the chain (consolidated CELEX numbers such as `02016R0679-20160504` give the text with amendments applied);
+- `lookup_eu_act_tool(citation)` — 'Regulation (EU) 2016/679' / 'Directive 95/46/EC' / ELI / CELEX → CELEX, title, date, EU in-force status; `search_eu_legislation_tool(keyword, act_type, year_from, year_to, in_force_only)` and `search_eu_case_law_tool(case_number, keyword, court, ...)` (CJEU/General Court, by case number like `C-131/12` or title words); `get_eu_act_relations_tool(celex, relation)` — amendments, repeals, legal basis, consolidated versions, corrigenda, interpreting case-law (all EU-level facts, never Icelandic applicability);
 - `get_iceland_eea_status(celex)` — public EES-gagnagrunnur retrieval;
 - `get_efta_eea_factsheet(celex)` — public EFTA EEA-Lex retrieval;
 - `trace_eea_public_context(celex)` — combines the two EEA evidence sources;
@@ -247,7 +248,7 @@ Try a CELEX number such as `32016R0679`. The model should use the Icelandic EES 
 - The EES and EFTA adapters currently parse public HTML. This is acceptable for a demonstrator but should be replaced by supported feeds/APIs if/when available.
 - Lagasafn SGML parsing is intentionally generic and must be validated against representative documents/annexes before any production use.
 - `get_regulation`'s `law_basis` field is a regex extraction of the regulation's own "heimild"/"lagastoð" clause, not a verified structured field — it can miss a citation phrased unusually, or (rarely) pick up a spurious `nr. N/YYYY` match near an unrelated use of "heimild" in the text.
-- Point-in-time law text (Lagasafn `as_of`) is not yet implemented, even though Alþingi's per-session Lagasafn archive (`lagasafn/zip/{session}/allt_sgml.zip`, sessions 119+) makes it feasible without any new source.
+- Point-in-time law text (`get_law(as_of=...)`) returns the law as of the latest published *edition* on or before the date (editions are roughly 2–4 a year), so amendments enacted between that edition and `as_of` are not reflected; the tool result states the edition date. The search index (`search_laws`) still covers only the latest snapshot.
 - The PoC does not yet reconstruct amendment graphs across laws, Stjórnartíðindi A-deild structure, court citations, or Samráðsgátt outcome links.
 - The PoC does not make legal determinations. It returns evidence and status context for an AI/client to reason over.
 
@@ -258,7 +259,7 @@ with law-basis extraction (`get_regulation`, `search_regulations`), unified cour
 (`search_court_rulings`, `get_court_ruling`), EUR-Lex/CELLAR (`get_eur_lex_act`), and Stjórnartíðindi
 (`search_stjornartidindi`, `get_stjornartidindi_advert`). Remaining, roughly in order:
 
-1. Point-in-time Lagasafn text (`as_of` on `get_law`) by indexing the per-session archive instead of only the latest snapshot;
+1. **Implemented**: point-in-time Lagasafn text — `get_law(as_of=...)` maps a date to one of Alþingi's numbered editions (`/lagas/{edition}/{year}{nnn}.html`, listed on the zip-index page; 70 editions from 119 = 1995). Idea from `althingi-net/lagasafn-xml`, which also parses the same HTML into article-level XML (a possible future step for article navigation);
 2. Samráðsgátt;
 3. **Implemented**: `search_court_rulings(law_citation=...)` filters rulings by a whole-law citation tag (format
    `"NNN/YYYY"`). My first attempt at this guessed wrong string formats for the underlying `webVerdicts`
@@ -302,6 +303,9 @@ Keep the MCP tool surface stable while swapping brittle HTML adapters for suppor
 - `search_court_rulings`: the `court` filter is confirmed reliable only for `"Hæstiréttur"` — `"Landsréttur"` or a héraðsdómur name silently returns zero results even though those exact strings appear in the returned data. Filter by court client-side for anything but Hæstiréttur.
 - `get_court_ruling`: full text is structured `richText` for some rulings (mainly recent Hæstiréttur) and a PDF (extracted via `pdfplumber`) for others — check `text_source` on the result.
 - `search_stjornartidindi`: the upstream GraphQL resolver returns a 500 error if `dateFrom`/`dateTo` are sent as explicit `null` rather than omitted — this tool omits the keys entirely when unset.
+- `althingi.is` returns HTTP 403 to the default `python-httpx` User-Agent (the pages load fine with this project's descriptive UA) — any new fetch against it must set the UA.
+- EU legislation/case-law search uses CELLAR's Virtuoso `bif:contains` full-text operator: a `CONTAINS(LCASE(?title))` filter over the whole repository times out (>45 s), and a `REGEX` over every CELEX does too, so case numbers are resolved by exact CELEX candidates (`62012CJ0131`, `…CC…`, …) instead. CELLAR returns one row per title/ECLI variant of the same work, so results are de-duplicated by CELEX.
+- Hagstofa English tables (`language='en'`): `px.hagstofa.is/pxen/api/v1/en/` shares folder/table ids with the Icelandic tree but carries only ~85% of the tables (1,777 of 2,102 at last crawl), with English variable codes/labels — codes are not interchangeable between languages. Limits are published at `<base>?config` (both languages: 100,000 cells, 5,000 selected values).
 - Hagstofa catalogue search: PX-Web v1 (the only version on `px.hagstofa.is`; `/api/v2` returns 404) has no search endpoint, so `search_hagstofa_tables` searches a locally cached crawl of the whole folder tree (413 folders, 2,102 tables). The crawl has to be sequential with ~0.3 s spacing — concurrent requests get HTTP 429. The packaged seed (`hagstofa_catalog.json`, rebuild with `iceland-context-hagstofa-crawl`) is used at start; a background re-crawl refreshes it into `~/.cache/iceland-context-mcp/` (override with `ICELAND_MCP_CACHE_DIR`) when it is more than 14 days old, and a partial crawl never replaces a good snapshot. Selections over 100,000 cells are refused with HTTP 403 (measured 94,770 OK / 101,088 rejected).
 - Eurostat: an unknown filter *value* is silently treated as "no filter" (e.g. `geo=ZZ` → "extraction too big"), so `get_eurostat_series_tool` validates filters against the dataset's SDMX codelists first. json-stat2 flat indices vary fastest in the *last* dimension; earlier versions of this server decoded them with the first dimension fastest, which mislabelled multi-dimension results (single-series queries were unaffected).
 - `get_hagstofa_table`: PX-Web folder paths are exact Icelandic abbreviations with no fuzzy matching — a guessed or partial path (including a bare table filename with the folders left off) fails outright, so callers must discover the path via `browse_hagstofa_tables` rather than guessing from a table's title or code. Separately, some tables' CSV response declares `charset=Windows-1252` in `Content-Type` while the body is actually UTF-8 with a BOM — this tool checks for the BOM before trusting the declared charset.

@@ -150,6 +150,14 @@ async def get_geodata(
 # ---------------------------------------------------------------------------
 
 HAGSTOFA_BASE = "https://px.hagstofa.is/pxis/api/v1/is/"
+HAGSTOFA_BASES = {"is": HAGSTOFA_BASE, "en": "https://px.hagstofa.is/pxen/api/v1/en/"}
+
+
+def _hagstofa_base(language: str) -> str:
+    try:
+        return HAGSTOFA_BASES[language.lower()]
+    except KeyError:
+        raise ToolError("language must be 'is' (Icelandic, default) or 'en' (English, fewer tables).") from None
 
 
 class StatTableResult(BaseModel):
@@ -158,6 +166,7 @@ class StatTableResult(BaseModel):
     rows: list[list[str]]
     truncated: bool
     total_rows: int
+    language: str = "is"
     source_url: str
     retrieved_at: str
     note: str = "Hagstofa Íslands PX-Web table, fetched as CSV and parsed. Values are as published — check the table's own unit/scale conventions (e.g. thousands of ISK) before using them."
@@ -172,9 +181,27 @@ def _decode_hagstofa_csv(content: bytes, declared_encoding: str | None) -> str:
     return content.decode(declared_encoding or "utf-8-sig")
 
 
-_hagstofa_meta_cache: dict[str, tuple[float, dict]] = {}
+_hagstofa_meta_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+_hagstofa_limits_cache: dict[str, dict] = {}
 HAGSTOFA_META_TTL_SECONDS = 3600
-HAGSTOFA_MAX_CELLS = 100_000  # Hagstofa's PX-Web rejects larger selections (checked against its 403 response)
+# Fallbacks for the PX-Web limits, which Hagstofa publishes at `<base>?config` (checked live: is/en both
+# maxCells 100000 / maxValues 5000; a 101,088-cell selection got 403 while 94,770 succeeded).
+HAGSTOFA_DEFAULT_LIMITS = {"maxCells": 100_000, "maxValues": 5_000}
+
+
+async def _hagstofa_limits(language: str) -> dict:
+    if language in _hagstofa_limits_cache:
+        return _hagstofa_limits_cache[language]
+    limits = dict(HAGSTOFA_DEFAULT_LIMITS)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), headers={"User-Agent": USER_AGENT}) as client:
+            response = await client.get(_hagstofa_base(language), params={"config": ""})
+        config = response.json()
+        limits.update({k: int(config[k]) for k in ("maxCells", "maxValues") if k in config})
+    except (httpx.HTTPError, ValueError, TypeError):
+        pass
+    _hagstofa_limits_cache[language] = limits
+    return limits
 
 
 class HagstofaValue(BaseModel):
@@ -193,6 +220,7 @@ class HagstofaVariable(BaseModel):
 
 class HagstofaTableInfo(BaseModel):
     table_path: str
+    language: str
     title: str
     variables: list[HagstofaVariable]
     total_cells: int
@@ -206,36 +234,45 @@ class HagstofaTableInfo(BaseModel):
     )
 
 
-def _bad_path_error(table_path: str) -> ToolError:
+def _bad_path_error(table_path: str, language: str = "is") -> ToolError:
+    english = (
+        " Not every table has an English edition — the search results show `title_en` for those that do; "
+        "retry with language='is' otherwise."
+        if language == "en"
+        else ""
+    )
     return ToolError(
         f"No PX-Web table at path '{table_path}'. This path must match a real folder/table exactly — there is "
         "no fuzzy matching, and a guessed or partial path always fails this way. Use search_hagstofa_tables "
         "(keyword search) or browse_hagstofa_tables (folder by folder) and pass the returned path unmodified."
+        + english
     )
 
 
-async def _hagstofa_metadata(table_path: str) -> dict:
+async def _hagstofa_metadata(table_path: str, language: str = "is") -> dict:
     import time
 
-    cached = _hagstofa_meta_cache.get(table_path)
+    base = _hagstofa_base(language)
+    cache_key = (language, table_path)
+    cached = _hagstofa_meta_cache.get(cache_key)
     if cached and time.time() - cached[0] < HAGSTOFA_META_TTL_SECONDS:
         return cached[1]
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
-        response = await client.get(f"{HAGSTOFA_BASE}{table_path}")
+        response = await client.get(f"{base}{table_path}")
     # PX-Web answers a bare 400/404 (no body) for any path that isn't exactly a table.
     if response.status_code in (400, 404):
-        raise _bad_path_error(table_path)
+        raise _bad_path_error(table_path, language)
     response.raise_for_status()
     try:
         data = response.json()
     except ValueError:
-        raise _bad_path_error(table_path) from None  # a folder path returns a listing, not table metadata
+        raise _bad_path_error(table_path, language) from None  # a folder path returns a listing, not table metadata
     if not isinstance(data, dict) or "variables" not in data:
         raise ToolError(
             f"'{table_path}' is a folder, not a table. Pass it to browse_hagstofa_tables to list what it contains."
         )
-    _hagstofa_meta_cache[table_path] = (time.time(), data)
+    _hagstofa_meta_cache[cache_key] = (time.time(), data)
     return data
 
 
@@ -271,10 +308,11 @@ def _resolve_filter_values(variable: dict, requested: list[str], table_path: str
 
 
 async def get_hagstofa_table_info(
-    table_path: str, variable: str | None = None, query: str | None = None, limit: int = 50
+    table_path: str, variable: str | None = None, query: str | None = None, limit: int = 50, language: str = "is"
 ) -> HagstofaTableInfo:
     table_path = table_path.strip("/")
-    meta = await _hagstofa_metadata(table_path)
+    language = language.lower()
+    meta = await _hagstofa_metadata(table_path, language)
     variables_out: list[HagstofaVariable] = []
     total_cells = 1
     for var in meta["variables"]:
@@ -316,20 +354,26 @@ async def get_hagstofa_table_info(
         )
     return HagstofaTableInfo(
         table_path=table_path,
+        language=language,
         title=meta.get("title", ""),
         variables=variables_out,
         total_cells=total_cells,
-        source_url=f"{HAGSTOFA_BASE}{table_path}",
+        source_url=f"{_hagstofa_base(language)}{table_path}",
         retrieved_at=utc_now(),
     )
 
 
 async def get_hagstofa_table(
-    table_path: str, filters: dict[str, list[str]] | None = None, last_n_periods: int | None = None
+    table_path: str,
+    filters: dict[str, list[str]] | None = None,
+    last_n_periods: int | None = None,
+    language: str = "is",
 ) -> StatTableResult:
     table_path = table_path.strip("/")
-    url = f"{HAGSTOFA_BASE}{table_path}"
-    meta = await _hagstofa_metadata(table_path)
+    language = language.lower()
+    url = f"{_hagstofa_base(language)}{table_path}"
+    meta = await _hagstofa_metadata(table_path, language)
+    limits = await _hagstofa_limits(language)
     variables = {v["code"].casefold(): v for v in meta["variables"]}
     time_var = next((v for v in meta["variables"] if v.get("time")), None)
 
@@ -363,15 +407,24 @@ async def get_hagstofa_table(
         selected_counts[time_var["code"]] = min(last_n_periods, len(time_var["values"]))
 
     estimated_cells = 1
+    selected_values = 0
     for var in meta["variables"]:
-        estimated_cells *= selected_counts.get(var["code"], len(var["values"]))
-    if estimated_cells > HAGSTOFA_MAX_CELLS:
+        count = selected_counts.get(var["code"], len(var["values"]))
+        estimated_cells *= count
+        selected_values += count
+    if selected_values > limits["maxValues"]:
+        raise ToolError(
+            f"This selection names {selected_values:,} values across all variables, over Hagstofa's "
+            f"{limits['maxValues']:,}-value limit (omitted variables count as all values). Filter the "
+            "variables with the most values (see get_hagstofa_table_info) or set last_n_periods."
+        )
+    if estimated_cells > limits["maxCells"]:
         biggest = sorted(
             (v for v in meta["variables"] if v["code"] not in selected_counts),
             key=lambda v: -len(v["values"]),
         )[:3]
         raise ToolError(
-            f"This selection is about {estimated_cells:,} cells, over Hagstofa's ~{HAGSTOFA_MAX_CELLS:,} limit. "
+            f"This selection is about {estimated_cells:,} cells, over Hagstofa's {limits['maxCells']:,}-cell limit. "
             "Narrow it with `filters` (most values live in: "
             + ", ".join(f"{v['code']} [{len(v['values'])}]" for v in biggest)
             + (f") or set last_n_periods for the time variable '{time_var['code']}'." if time_var else ").")
@@ -402,6 +455,7 @@ async def get_hagstofa_table(
         rows=body[:MAX_ROWS],
         truncated=truncated,
         total_rows=len(body),
+        language=language,
         source_url=url,
         retrieved_at=utc_now(),
     )
@@ -410,6 +464,7 @@ async def get_hagstofa_table(
 class HagstofaSearchHit(BaseModel):
     path: str
     title: str
+    title_en: str | None = None
     folder: str
     updated: str | None = None
 
@@ -422,7 +477,8 @@ class HagstofaSearchResult(BaseModel):
     catalogue_refreshing: bool
     note: str = (
         "Locally cached index of Hagstofa's PX-Web catalogue (PX-Web has no search). Pass a hit's `path` unmodified "
-        "to get_hagstofa_table_info, then get_hagstofa_table_tool. No hits: try Icelandic terms or fewer words."
+        "to get_hagstofa_table_info, then get_hagstofa_table_tool. Hits with `title_en` also exist in English "
+        "(pass language='en' to the table tools for English variable names and labels). No hits: try fewer words."
     )
 
 
@@ -443,7 +499,10 @@ async def search_hagstofa_catalog(query: str, limit: int = 15) -> HagstofaSearch
     hits = catalog.search_catalog(snapshot, query, limit)
     return HagstofaSearchResult(
         query=query,
-        hits=[HagstofaSearchHit(path=h.path, title=h.title, folder=h.folder, updated=h.updated) for h in hits],
+        hits=[
+            HagstofaSearchHit(path=h.path, title=h.title, title_en=h.title_en, folder=h.folder, updated=h.updated)
+            for h in hits
+        ],
         tables_indexed=len(snapshot.tables),
         catalogue_crawled_at=snapshot.crawled_at,
         catalogue_refreshing=catalog.refreshing(),
@@ -469,10 +528,19 @@ class HagstofaBrowseResult(BaseModel):
     )
 
 
-async def browse_hagstofa(path: str = "") -> HagstofaBrowseResult:
+async def browse_hagstofa(path: str = "", language: str = "is") -> HagstofaBrowseResult:
     path = path.strip("/")
-    url = f"{HAGSTOFA_BASE}{path}/" if path else HAGSTOFA_BASE
-    data = await _get_json(url)
+    base = _hagstofa_base(language)
+    url = f"{base}{path}/" if path else base
+    try:
+        data = await _get_json(url)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (400, 404):
+            raise ToolError(
+                f"No PX-Web folder at '{path}'. Browse from the top (empty path) and descend using each "
+                "entry's full_path, or use search_hagstofa_tables."
+            ) from None
+        raise
     entries = []
     for item in data:
         # The API root uses {"dbid", "text"} with no "type" (always a folder);

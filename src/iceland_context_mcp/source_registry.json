@@ -6,7 +6,7 @@
     "authority_label": "Official consolidated legislation",
     "base_url": "https://www.althingi.is/lagasafn/",
     "machine_source": "https://www.althingi.is/lagasafn/zip-skra-af-lagasafni/",
-    "notes": "Use the live official law page for verification. Bulk SGML snapshots are useful for discovery/indexing but can lag later amendments."
+    "notes": "Use the live official law page for verification. Bulk SGML snapshots are useful for discovery/indexing but can lag later amendments. Point-in-time: Alþingi publishes numbered editions (listed at machine_source, each labelled with its date, 119 = Oct 1995 through the current 157c); per-law pages exist per edition at /lagas/{edition}/{year}{nnn}.html, which get_law(as_of=...) uses. Requests need a descriptive User-Agent — the default python-httpx UA gets HTTP 403."
   },
   "althingi_open_xml": {
     "name": "Alþingi — open parliamentary XML",
@@ -57,7 +57,7 @@
     "authority_label": "Official EU legal source",
     "base_url": "https://eur-lex.europa.eu/",
     "machine_source": "https://publications.europa.eu/webapi/rdf/sparql",
-    "notes": "An EU act appearing here must never, by that fact alone, be represented as applicable Icelandic law. get_eur_lex_act fetches metadata via the public CELLAR SPARQL endpoint (SELECT query, CDM ontology predicates) and full text via CELLAR's content-negotiated REST endpoint (publications.europa.eu/resource/celex/{CELEX}) — the same backend eur-lex.europa.eu itself runs on, no API key. The REST fetch requires an explicit Accept: application/xhtml+xml, text/html header; without it CELLAR silently serves a much shorter metadata-only representation instead of erroring (confirmed live — verify text length looks plausible for the act, not just that the call succeeded). end_of_validity uses 9999-12-31 as its 'no end date' sentinel upstream; this tool converts that to null. No Icelandic-language expressions exist (Iceland is not an EU member) — supported languages are en/da/de/fr/sv."
+    "notes": "An EU act appearing here must never, by that fact alone, be represented as applicable Icelandic law. get_eur_lex_act fetches metadata via the public CELLAR SPARQL endpoint (SELECT query, CDM ontology predicates) and full text via CELLAR's content-negotiated REST endpoint (publications.europa.eu/resource/celex/{CELEX}) — the same backend eur-lex.europa.eu itself runs on, no API key. The REST fetch requires an explicit Accept: application/xhtml+xml, text/html header; without it CELLAR silently serves a much shorter metadata-only representation instead of erroring (confirmed live — verify text length looks plausible for the act, not just that the call succeeded). end_of_validity uses 9999-12-31 as its 'no end date' sentinel upstream; this tool converts that to null. No Icelandic-language expressions exist (Iceland is not an EU member) — supported languages are en/da/de/fr/sv. Discovery tools (lookup_eu_act_tool, search_eu_legislation_tool, search_eu_case_law_tool, get_eu_act_relations_tool) query the same SPARQL endpoint: free-text via Virtuoso bif:contains on expression titles, relations via CDM predicates (resource_legal_amends_resource_legal, ..._repeals_..., ..._based_on_..., act_consolidated_consolidates_resource_legal, resource_legal_corrects_resource_legal, case-law_interpretes_resource_legal). Idea and predicate coverage informed by cyanheads/eur-lex-mcp-server (Apache-2.0); no code was copied."
   },
   "stjornartidindi": {
     "name": "Stjórnartíðindi",

@@ -2,8 +2,10 @@
 
 PX-Web v1 (all Hagstofa hosts) has no search endpoint, only per-folder listings, and folder
 ids are Icelandic abbreviations that can't be guessed. This module walks the whole tree once
-(~1,000 folder requests, throttled — the server answers 429 to concurrent bursts), keeps a
-flat index of every table with its folder-title breadcrumb, and searches that locally.
+(~800 folder requests across the Icelandic and English trees, throttled — the servers answer
+429 to concurrent bursts), keeps a flat index of every table with its folder-title breadcrumb
+in both languages, and searches that locally. The English tree (`pxen/api/v1/en/`) shares
+folder/table ids with the Icelandic one but has English titles for the tables it carries.
 
 Snapshot sources, newest wins: a runtime cache file (refreshed in the background when older
 than CATALOG_MAX_AGE_DAYS) and a seed shipped in the package (`hagstofa_catalog.json`,
@@ -13,7 +15,6 @@ rebuilt with the `iceland-context-hagstofa-crawl` command).
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import re
 import sys
@@ -25,10 +26,11 @@ import httpx
 from pydantic import BaseModel
 
 HAGSTOFA_API = "https://px.hagstofa.is/pxis/api/v1/is/"
+HAGSTOFA_API_EN = "https://px.hagstofa.is/pxen/api/v1/en/"
 USER_AGENT = "IcelandTrustedContextMCPPoC/0.1 (+public research proof of concept)"
 SEED_PATH = Path(__file__).with_name("hagstofa_catalog.json")
 CATALOG_MAX_AGE_DAYS = 14
-MIN_REQUEST_INTERVAL = 0.3
+MIN_REQUEST_INTERVAL = 0.15  # ~6 req/s; the servers allow 30/s (is) and 10/s (en) and answer 429 to bursts
 MAX_RETRIES = 6
 
 
@@ -42,6 +44,8 @@ class CatalogTable(BaseModel):
     title: str
     updated: str | None = None
     breadcrumb: list[str]
+    title_en: str | None = None  # None: the table is not published in the English tree
+    breadcrumb_en: list[str] = []
 
 
 class CatalogSnapshot(BaseModel):
@@ -54,27 +58,24 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-async def crawl_catalog(progress=None) -> CatalogSnapshot:
-    """Walk the whole tree. Raises RuntimeError if any folder could not be read, so a partial
-    crawl never replaces a good snapshot."""
+async def _crawl_tree(base: str, progress=None) -> tuple[list[CatalogTable], int, list[str]]:
+    """Walk one language's tree. Returns (tables, folders read, failed folder paths)."""
     tables: list[CatalogTable] = []
     failed: list[str] = []
     folders = 0
-    lock = asyncio.Lock()
     last_request = 0.0
 
     async def fetch(client: httpx.AsyncClient, url: str) -> list[dict] | None:
         nonlocal last_request
         for attempt in range(MAX_RETRIES):
-            async with lock:  # serialises requests and enforces the minimum spacing
-                wait = MIN_REQUEST_INTERVAL - (asyncio.get_running_loop().time() - last_request)
-                if wait > 0:
-                    await asyncio.sleep(wait)
-                try:
-                    response = await client.get(url)
-                except httpx.HTTPError:
-                    response = None
-                last_request = asyncio.get_running_loop().time()
+            wait = MIN_REQUEST_INTERVAL - (asyncio.get_running_loop().time() - last_request)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                response = await client.get(url)
+            except httpx.HTTPError:
+                response = None
+            last_request = asyncio.get_running_loop().time()
             if response is not None and response.status_code == 200:
                 return response.json()
             if response is not None and response.status_code not in (429, 500, 502, 503, 504):
@@ -84,7 +85,7 @@ async def crawl_catalog(progress=None) -> CatalogSnapshot:
 
     async def walk(client: httpx.AsyncClient, path: str, breadcrumb: list[str]) -> None:
         nonlocal folders
-        data = await fetch(client, f"{HAGSTOFA_API}{path}/" if path else HAGSTOFA_API)
+        data = await fetch(client, f"{base}{path}/" if path else base)
         if data is None:
             failed.append(path)
             return
@@ -103,9 +104,23 @@ async def crawl_catalog(progress=None) -> CatalogSnapshot:
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
         await walk(client, "", [])
-    if failed:
-        raise RuntimeError(f"{len(failed)} folder(s) could not be read (e.g. {failed[0]}); snapshot not saved")
-    return CatalogSnapshot(crawled_at=_utc_now(), folders_crawled=folders, tables=tables)
+    return tables, folders, failed
+
+
+async def crawl_catalog(progress=None) -> CatalogSnapshot:
+    """Walk both language trees. Raises RuntimeError if any folder could not be read, so a
+    partial crawl never replaces a good snapshot."""
+    tables, folders, failed = await _crawl_tree(HAGSTOFA_API, progress)
+    tables_en, folders_en, failed_en = await _crawl_tree(HAGSTOFA_API_EN, progress)
+    if failed or failed_en:
+        first = (failed or failed_en)[0]
+        raise RuntimeError(f"{len(failed) + len(failed_en)} folder(s) could not be read (e.g. {first}); snapshot not saved")
+    by_path = {t.path: t for t in tables}
+    for en in tables_en:
+        if en.path in by_path:
+            by_path[en.path].title_en = en.title
+            by_path[en.path].breadcrumb_en = en.breadcrumb
+    return CatalogSnapshot(crawled_at=_utc_now(), folders_crawled=folders + folders_en, tables=tables)
 
 
 def _write_snapshot(snapshot: CatalogSnapshot, path: Path) -> None:
@@ -177,17 +192,17 @@ EN_TO_IS = {
     "verðbólga": ["vísitala neysluverðs"],
     "verðbólgu": ["vísitala neysluverðs"],
     "atvinnuleysi": ["vinnumarkaðsrannsókn", "atvinnuleysi"],
-    "inflation": ["verðbólga", "vísitala neysluverðs", "verðlag"],
-    "cpi": ["vísitala neysluverðs"],
+    "inflation": ["verðbólga", "vísitala neysluverðs", "verðlag", "consumer price index"],
+    "cpi": ["vísitala neysluverðs", "consumer price index"],
     "consumer price": ["vísitala neysluverðs"],
     "prices": ["verðlag", "vísitala"],
-    "gdp": ["landsframleiðsla", "þjóðhagsreikningar"],
+    "gdp": ["landsframleiðsla", "þjóðhagsreikningar", "gross domestic product"],
     "national accounts": ["þjóðhagsreikningar"],
     "unemployment": ["atvinnuleysi", "vinnumarkaður"],
     "employment": ["starfandi", "vinnumarkaður"],
     "labour": ["vinnumarkaður"],
     "labor": ["vinnumarkaður"],
-    "wages": ["laun"],
+    "wages": ["laun", "wage index"],
     "salaries": ["laun"],
     "income": ["tekjur"],
     "population": ["mannfjöldi"],
@@ -251,6 +266,7 @@ def _expand_query(query: str) -> list[list[str]]:
 class CatalogSearchHit(BaseModel):
     path: str
     title: str
+    title_en: str | None = None
     folder: str
     updated: str | None = None
     score: float
@@ -262,8 +278,8 @@ def search_catalog(snapshot: CatalogSnapshot, query: str, limit: int = 15) -> li
         return []
     hits: list[CatalogSearchHit] = []
     for table in snapshot.tables:
-        title_words = _tokens(table.title)
-        crumb_words = [w for crumb in table.breadcrumb for w in _tokens(crumb)]
+        title_words = _tokens(table.title) + _tokens(table.title_en or "")
+        crumb_words = [w for crumb in table.breadcrumb + table.breadcrumb_en for w in _tokens(crumb)]
         id_words = _tokens(table.path.replace("/", " ").replace("_", " "))
         best = 0.0
         for variant in variants:
@@ -288,6 +304,7 @@ def search_catalog(snapshot: CatalogSnapshot, query: str, limit: int = 15) -> li
                 CatalogSearchHit(
                     path=table.path,
                     title=table.title,
+                    title_en=table.title_en,
                     folder=" > ".join(table.breadcrumb),
                     updated=table.updated,
                     score=round(best, 2),

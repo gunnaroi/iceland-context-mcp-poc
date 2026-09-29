@@ -419,3 +419,130 @@ def test_eurostat_jsonstat_decode_last_dimension_varies_fastest_with_flags_and_g
     assert got[("Germany", "2025-12")] == (132.8, "p")
     assert got[("Iceland", "2025-11")] == (None, ":")  # flagged as not available, no value
     assert got[("Iceland", "2025-12")] == (133.36, None)
+
+
+# --- English Hagstofa titles ------------------------------------------------------------------
+
+
+def test_hagstofa_catalog_has_english_titles_and_searches_them():
+    from iceland_context_mcp import hagstofa_catalog as catalog
+
+    snapshot = catalog.load_snapshot()
+    assert sum(1 for t in snapshot.tables if t.title_en) > 1500
+    hits = catalog.search_catalog(snapshot, "consumer price index", 5)
+    assert "Efnahagur/visitolur/1_vnv/1_vnv/VIS01000.px" in [h.path for h in hits]
+    assert all(h.title_en for h in hits[:1])
+
+
+def test_hagstofa_language_validation():
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from iceland_context_mcp.open_data import _hagstofa_base
+
+    assert _hagstofa_base("EN").endswith("/pxen/api/v1/en/")
+    try:
+        _hagstofa_base("de")
+        assert False, "expected ToolError"
+    except ToolError:
+        pass
+
+
+# --- Lagasafn editions / point-in-time law ------------------------------------------------------
+
+EDITIONS_HTML = """<ul>
+<li><a href="/lagasafn/zip/157c/allt.zip">157c. Íslensk lög 1. september 2026</a> — <a href="/lagasafn/pdf/157c/allt_pdf.zip">PDF</a></li>
+<li><a href="/lagasafn/zip/155/allt.zip">155. Íslensk lög 15. mars 2025</a></li>
+<li><a href="/lagasafn/zip/119/allt.zip">119. Uppfært til 1. október 1995.</a></li>
+<li><a href="/lagasafn/zip/nuna/allt.zip">Nýjasta útgáfa hverju sinni</a></li></ul>"""
+
+
+def test_parse_lagasafn_editions_and_pick():
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from iceland_context_mcp.sources import parse_lagasafn_editions, pick_edition
+
+    editions = parse_lagasafn_editions(EDITIONS_HTML)
+    assert [(e.version, e.date) for e in editions] == [("157c", "2026-09-01"), ("155", "2025-03-15"), ("119", "1995-10-01")]
+    assert pick_edition(editions, "2025-04-01").version == "155"  # latest edition on or before the date
+    assert pick_edition(editions, "2025-03-15").version == "155"  # boundary is inclusive
+    assert pick_edition(editions, "2030-01-01").version == "157c"
+    for bad in ("1990-01-01", "2025-13-45", "yesterday"):
+        try:
+            pick_edition(editions, bad)
+            assert False, "expected ToolError"
+        except ToolError:
+            pass
+
+
+def test_get_law_as_of_live():
+    import asyncio
+
+    from iceland_context_mcp.sources import fetch_law
+
+    result = asyncio.run(fetch_law(2018, 90, "2025-04-01"))
+    assert result.edition == "155" and result.edition_date == "2025-03-15"
+    assert "NOT reflected" in result.status_note
+
+
+# --- EU law discovery ----------------------------------------------------------------------------
+
+
+def test_eu_citation_to_celex_candidates():
+    from iceland_context_mcp.eurlex import celex_candidates
+
+    assert celex_candidates("Regulation (EU) 2016/679")[0] == "32016R0679"
+    assert celex_candidates("Directive 95/46/EC")[0] == "31995L0046"
+    assert "32001R1049" in celex_candidates("Regulation (EC) No 1049/2001")  # number/year order
+    assert celex_candidates("Regulation (EEC) No 1408/71")[0] == "31971R1408"
+    assert celex_candidates("Council Framework Decision 2002/584/JHA")[0] == "32002F0584"
+    assert celex_candidates("32016R0679") == ["32016R0679"]
+    assert celex_candidates("http://data.europa.eu/eli/reg/2016/679/oj") == ["32016R0679"]
+    assert celex_candidates("no citation here") == []
+
+
+def test_eu_case_number_parsing():
+    from iceland_context_mcp.eurlex import parse_case_number
+
+    assert parse_case_number("C-131/12") == ("C", 2012, 131)
+    assert parse_case_number("Case C‑311/18") == ("C", 2018, 311)  # non-breaking hyphen
+    assert parse_case_number("T-22/20") == ("T", 2020, 22)
+    assert parse_case_number("26/62") == ("C", 1962, 26)
+    assert parse_case_number("C-1/95") == ("C", 1995, 1)
+    assert parse_case_number("hello") is None
+
+
+def test_eu_fulltext_expression_sanitises():
+    from iceland_context_mcp.eurlex import _fulltext_expression
+
+    assert _fulltext_expression("data protection") == "'data' AND 'protection'"
+    assert "\"" not in _fulltext_expression('bad " quote')
+
+
+def test_eu_lookup_and_relations_live():
+    import asyncio
+
+    from iceland_context_mcp.eurlex import get_eu_act_relations, lookup_eu_act
+
+    async def run():
+        found = await lookup_eu_act("Regulation (EU) 2016/679")
+        relations = await get_eu_act_relations("32016R0679")
+        return found, relations
+
+    found, relations = asyncio.run(run())
+    assert found.matches[0].celex == "32016R0679" and found.matches[0].in_force is True
+    groups = {g.relation: g for g in relations.relations}
+    assert "31995L0046" in [i.celex for i in groups["repeals"].items]
+    assert groups["consolidated_versions"].total >= 1
+
+
+def test_friendly_errors_convert_value_and_http_errors():
+    import httpx
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from iceland_context_mcp.server import _friendly
+
+    assert isinstance(_friendly(ValueError("Regulation number must be between 1 and 9999.")), ToolError)
+    response = httpx.Response(404, request=httpx.Request("GET", "https://example.org/x"))
+    assert "example.org" in str(_friendly(httpx.HTTPStatusError("x", request=response.request, response=response)))
+    assert isinstance(_friendly(httpx.ReadTimeout("t")), ToolError)
+    assert _friendly(KeyError("bug")) is None  # genuine bugs must still surface as crashes

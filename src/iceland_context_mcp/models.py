@@ -28,11 +28,29 @@ class SourceRegistryResult(BaseModel):
     sources: list[SourceRecord]
 
 
+class LawEdition(BaseModel):
+    version: str
+    date: str
+    label: str
+
+
+class LawEditionsResult(BaseModel):
+    editions: list[LawEdition]
+    provenance: Provenance
+    note: str = (
+        "Althingi publishes the consolidated law collection as numbered editions (newest first). Each edition "
+        "reflects all laws in force on its date; pass get_law(as_of='YYYY-MM-DD') to read a law as of the latest "
+        "edition on or before that date."
+    )
+
+
 class LawResult(BaseModel):
     official_identifier: str
     title: str | None = None
     text: str
     provenance: Provenance
+    edition: str | None = Field(default=None, description="Lagasafn edition the text comes from (as_of requests only).")
+    edition_date: str | None = Field(default=None, description="Publication date of that edition, YYYY-MM-DD.")
     status_note: str = Field(
         default="Consolidated Lagasafn text returned from the current official page; verify promulgated text/commencement where legally material."
     )

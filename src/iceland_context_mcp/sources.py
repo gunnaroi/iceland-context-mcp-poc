@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 import pdfplumber
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
+from mcp.server.mcpserver.exceptions import ToolError
 
 # CELLAR/EUR-Lex serves XHTML; parsing it with BeautifulSoup's HTML parser (as
 # every other adapter in this module does, deliberately, for a consistent
@@ -29,6 +30,8 @@ from .models import (
     EeaResult,
     EurLexActResult,
     LawBasisReference,
+    LawEdition,
+    LawEditionsResult,
     LawResult,
     Provenance,
     RegulationAmendmentEvent,
@@ -135,20 +138,99 @@ def normalize_celex(celex: str) -> str:
     return value
 
 
-async def fetch_law(year: int, number: int) -> LawResult:
+ALTHINGI_LAGASAFN_ZIP_INDEX = "https://www.althingi.is/lagasafn/zip-skra-af-lagasafni/"
+ICELANDIC_MONTHS = {
+    "janúar": 1, "febrúar": 2, "mars": 3, "apríl": 4, "maí": 5, "júní": 6,
+    "júlí": 7, "ágúst": 8, "september": 9, "október": 10, "nóvember": 11, "desember": 12,
+}  # fmt: skip
+_EDITION_LABEL_RE = re.compile(r"(\d{1,2})\.\s+([a-záéíóúýþæö]+)\s+(\d{4})", re.IGNORECASE)
+_editions_cache: tuple[float, list[LawEdition]] | None = None
+
+
+def parse_lagasafn_editions(html: str) -> list[LawEdition]:
+    """Parse the zip-index page: `<a href=".../zip/157c/allt.zip">157c. Íslensk lög 1. september 2026</a>`."""
+    editions: list[LawEdition] = []
+    for a in BeautifulSoup(html, "lxml").find_all("a", href=re.compile(r"/lagasafn/zip/[0-9]+[a-z]?/allt\.zip$")):
+        version = re.search(r"/zip/([0-9]+[a-z]?)/", a["href"]).group(1)
+        label = a.get_text(" ", strip=True)
+        match = _EDITION_LABEL_RE.search(label)
+        month = ICELANDIC_MONTHS.get(match.group(2).lower()) if match else None
+        if not match or not month:
+            continue
+        date = f"{int(match.group(3)):04d}-{month:02d}-{int(match.group(1)):02d}"
+        editions.append(LawEdition(version=version, date=date, label=label))
+    editions.sort(key=lambda e: e.date, reverse=True)
+    return editions
+
+
+async def list_law_editions() -> LawEditionsResult:
+    global _editions_cache
+    import time
+
+    if _editions_cache is None or time.time() - _editions_cache[0] > 86_400:
+        response = await _get(ALTHINGI_LAGASAFN_ZIP_INDEX)
+        editions = parse_lagasafn_editions(response.text)
+        if not editions:
+            raise ToolError("Could not read the list of Lagasafn editions from althingi.is (page layout changed?).")
+        _editions_cache = (time.time(), editions)
+    source = registry_record("althingi_lagasafn")
+    return LawEditionsResult(
+        editions=_editions_cache[1],
+        provenance=Provenance(
+            publisher=source.publisher,
+            source_url=ALTHINGI_LAGASAFN_ZIP_INDEX,
+            retrieved_at=utc_now(),
+            authority_class=source.authority_class,
+            authority_label=source.authority_label,
+        ),
+    )
+
+
+def pick_edition(editions: list[LawEdition], as_of: str) -> LawEdition:
+    try:
+        datetime.strptime(as_of, "%Y-%m-%d")
+    except ValueError:
+        raise ToolError("as_of must be an ISO date, YYYY-MM-DD.") from None
+    for edition in editions:  # newest first
+        if edition.date <= as_of:
+            return edition
+    oldest = editions[-1]
+    raise ToolError(
+        f"No Lagasafn edition on or before {as_of}; the oldest available edition is {oldest.version} "
+        f"({oldest.date}). Use list_law_editions to see what exists."
+    )
+
+
+async def fetch_law(year: int, number: int, as_of: str | None = None) -> LawResult:
     if not 1800 <= year <= datetime.now().year + 1:
-        raise ValueError("Unexpected law year.")
+        raise ToolError("Unexpected law year.")
     if not 1 <= number <= 999:
-        raise ValueError("Law number must be between 1 and 999.")
+        raise ToolError("Law number must be between 1 and 999.")
     official_identifier = f"{year}{number:03d}"
-    url = f"https://www.althingi.is/lagas/nuna/{official_identifier}.html"
-    response = await _get(url)
+    edition: LawEdition | None = None
+    if as_of:
+        edition = pick_edition((await list_law_editions()).editions, as_of)
+        url = f"https://www.althingi.is/lagas/{edition.version}/{official_identifier}.html"
+    else:
+        url = f"https://www.althingi.is/lagas/nuna/{official_identifier}.html"
+    try:
+        response = await _get(url)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 404:
+            where = f"edition {edition.version} ({edition.date})" if edition else "the current Lagasafn"
+            reason = (
+                " — it was probably enacted after that edition or repealed before it"
+                if edition
+                else " — check the year and number, or it may have been repealed"
+            )
+            raise ToolError(f"Law {number}/{year} is not in {where}{reason}.") from None
+        raise
     soup = BeautifulSoup(response.text, "lxml")
     title_tag = soup.find("h1") or soup.find("title")
     title = title_tag.get_text(" ", strip=True) if title_tag else None
     text = _clean_text(soup)
     source = registry_record("althingi_lagasafn")
-    return LawResult(
+    result = LawResult(
         official_identifier=official_identifier,
         title=title,
         text=text,
@@ -160,6 +242,15 @@ async def fetch_law(year: int, number: int) -> LawResult:
             authority_label=source.authority_label,
         ),
     )
+    if edition:
+        result.edition = edition.version
+        result.edition_date = edition.date
+        result.status_note = (
+            f"Consolidated text as published in Lagasafn edition {edition.version} ({edition.date}), the latest "
+            f"edition on or before {as_of}. Amendments enacted after {edition.date} are NOT reflected, so this is "
+            "the law as of the edition date, which can be earlier than as_of. Verify where legally material."
+        )
+    return result
 
 
 async def fetch_ees(celex: str) -> EeaResult:
