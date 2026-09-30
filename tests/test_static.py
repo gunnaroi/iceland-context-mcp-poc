@@ -182,7 +182,11 @@ def test_hagstofa_bad_path_raises_actionable_tool_error():
         asyncio.run(run())
         assert False, "expected ToolError"
     except ToolError as e:
-        assert "browse_hagstofa_tables" in str(e)
+        if "rate-limiting" in str(e):
+            import pytest
+
+            pytest.skip("Hagstofa is rate-limiting this address; the live bad-path check can't run right now")
+        assert "browse_hagstofa_tables" in str(e) or "search_hagstofa_tables" in str(e)
 
 
 def test_decode_hagstofa_csv_trusts_bom_over_mislabeled_declared_encoding():
@@ -576,7 +580,7 @@ def test_hagstofa_send_waits_out_rate_limit(monkeypatch):
             return await open_data._hagstofa_send(client, "GET", "https://example.org/x")
 
     assert asyncio.run(recovered()).status_code == 200
-    assert slept == [2.0, 4.0]
+    assert slept == [10.0, 20.0]
 
     async def never_recovers():
         async with make_client([429] * 4) as client:
@@ -587,3 +591,33 @@ def test_hagstofa_send_waits_out_rate_limit(monkeypatch):
         assert False, "expected ToolError"
     except ToolError as e:
         assert "rate-limiting" in str(e)
+
+
+def test_hagstofa_search_falls_back_to_partial_matches():
+    from iceland_context_mcp import hagstofa_catalog as catalog
+
+    snapshot = catalog.load_snapshot()
+    # "departures" is not in the title of the Keflavik passenger tables; the other words still find them
+    hits = catalog.search_catalog(snapshot, "Keflavik airport departures foreign visitors", 10)
+    assert hits and all(h.partial for h in hits)
+    assert any("Keflav" in (h.title_en or h.title) for h in hits)
+    # an exact-enough query still returns full matches only
+    full = catalog.search_catalog(snapshot, "consumer price index", 5)
+    assert full and not any(h.partial for h in full)
+
+
+def test_hagstofa_metadata_disk_cache_roundtrip(tmp_path, monkeypatch):
+    import asyncio
+    import json
+    import time
+
+    from iceland_context_mcp import open_data
+
+    monkeypatch.setenv("ICELAND_MCP_CACHE_DIR", str(tmp_path))
+    open_data._hagstofa_meta_cache.clear()
+    meta = {"title": "t", "variables": [{"code": "Ár", "values": ["2024"], "valueTexts": ["2024"], "time": True}]}
+    path = open_data._meta_disk_path("is", "A/B/C.px")
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"t": time.time(), "data": meta}), encoding="utf-8")
+    # no network is touched: a fresh disk entry answers the lookup
+    assert asyncio.run(open_data._hagstofa_metadata("A/B/C.px", "is")) == meta

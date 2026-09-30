@@ -27,7 +27,10 @@ Arguments are `key=value` pairs (values that parse as JSON are JSON), or one JSO
 `call TOOL -` (stdin) or `call TOOL @args.json`. Paths are relative to this skill's folder. `uv` installs the three
 small dependencies on first run; without it, `pip install httpx pydantic lxml` and use `python scripts/iceland_stats.py`.
 Output is JSON on stdout. Errors go to stderr with exit status 2 and are written as instructions (which tool to call,
-which values are valid) — read them rather than retrying with another guess. The sandbox needs outbound HTTPS to
+which values are valid) — read them rather than retrying with another guess.
+Hagstofa rate-limits per client address (HTTP 429, released only after a quiet spell): run requests one after
+another, never in parallel; the tools already wait and retry, and if they still report 429 stop calling for about
+five minutes instead of hammering, which keeps the block in place. The sandbox needs outbound HTTPS to
 `px.hagstofa.is`, `ec.europa.eu` and `hagstofan.github.io`; if it is blocked, say so instead of falling back to
 remembered numbers.
 
@@ -36,7 +39,9 @@ remembered numbers.
 1. **Find the table.** `search_hagstofa_tables query="..."` — Icelandic or English (hits show `title_en` when an English
    edition exists), inflected forms match, and common English terms are translated. Several tables often cover a topic;
    prefer recent `updated` dates over "eldra efni" (older, frozen) ones and read the titles for base year or breakdown.
-   No hit? Try fewer words, or `browse_hagstofa_tables` folder by folder.
+   Hits marked `partial` matched only some of your words (e.g. the Keflavík passenger tables when you add
+   "departures", a word their titles don't use) — read the title and definition before trusting them. No hit at
+   all? Try fewer or different words, or `browse_hagstofa_tables` folder by folder.
 2. **Inspect it.** `get_hagstofa_table_info table_path=...` lists the variables, how many values each has, sample values,
    and the time range (first 2 and last 4 periods). To see one variable's valid values:
    `variable=CODE query=substring`. Look at this before filtering — variable codes differ from table to table.
@@ -47,6 +52,11 @@ remembered numbers.
 
 `language=en` on the info/fetch tools gives English variable names and labels for tables that have an English edition
 (~85%). Variable codes are *different* in each language (`Vísitala` vs `Index`), so pick one language per query.
+
+The API returns bare numbers: **no provisional flags and no footnotes**. The newest periods of many series are
+provisional and get revised, and a table title can be looser than the question ("passengers through the airport by
+citizenship" is not strictly "foreign visitors departing"). Tell the user which definition the table actually
+uses, note that the latest periods may be revised, and point to hagstofa.is for footnotes when they matter.
 
 Check units before interpreting: many tables are in thousands of ISK or an index against a base year; some carry
 several measures in one variable (mean vs median, monthly vs annual change). Missing values appear as `.` or `..` —
@@ -63,8 +73,13 @@ with `Vísitala=CPI` (`CPILH` is the index excluding housing).
 `get_eurostat_series dataset=... filters='{"geo": "IS+EA20", ...}' last_n_periods=N`. Iceland is `geo=IS`; several
 values are joined with `+`. Unknown filter values are rejected up front (Eurostat itself would silently treat them as
 "no filter" and then fail with "extraction too big"). Check `data_end` in the search results: older editions freeze
-(`prc_hicp_midx` ends 2025-12; its successor is `prc_hicp_minr`). Observations carry Eurostat's flag (`p` provisional,
+(`prc_hicp_midx` and `prc_hicp_manr` stop in 2025; their successor is `prc_hicp_minr`, whose classification
+dimension is `coicop18`, not `coicop`). Observations carry Eurostat's flag (`p` provisional,
 `e` estimated, `b` break) and `value: null` for missing points — keep those visible.
+
+Worked example — HICP annual rate of change, Iceland vs euro area, last 24 months: `get_eurostat_series
+dataset=prc_hicp_minr filters='{"geo":"IS+EA","coicop18":"TOTAL","unit":"RCH_A"}' last_n_periods=24` (`EA` is
+Eurostat's changing-composition euro area; `EA20` is a fixed aggregate).
 
 **Comparability matters.** Icelandic national CPI (`VIS01000`) includes owner-occupied housing costs; the HICP that
 Eurostat publishes for Iceland does not. For "Iceland vs the euro area" use HICP for both (Eurostat `geo=IS` against

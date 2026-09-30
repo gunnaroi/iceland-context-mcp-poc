@@ -183,43 +183,39 @@ def _decode_hagstofa_csv(content: bytes, declared_encoding: str | None) -> str:
 
 
 async def _hagstofa_send(client: httpx.AsyncClient, method: str, url: str, **kwargs) -> httpx.Response:
-    """Send a request to Hagstofa, waiting out HTTP 429 (its rate limit is per client address and can be
-    tripped by other traffic from the same host) a few times before giving up with an actionable error."""
-    delay = 2.0
+    """Send a request to Hagstofa, waiting out HTTP 429. Its rate limit is per client address, can be tripped
+    by other traffic from the same host, and is only released after a quiet spell — retrying every few
+    seconds keeps it tripped. Waiting 10, 20 and 30 s (never below Retry-After) covers the ordinary case
+    while keeping a call under the ~2 minute limit many tool hosts enforce; past that, fail with an
+    actionable error rather than hold the call open."""
+    delay = 10.0
     for attempt in range(4):
         response = await client.request(method, url, **kwargs)
         if response.status_code != 429:
             return response
+        if attempt == 3:
+            break
         retry_after = response.headers.get("Retry-After", "")
-        await asyncio.sleep(float(retry_after) if retry_after.isdigit() else delay)
-        delay *= 2
+        await asyncio.sleep(max(delay, float(retry_after)) if retry_after.isdigit() else delay)
+        delay += 10.0
     raise ToolError(
-        "Hagstofa is rate-limiting requests (HTTP 429) and did not recover after several retries. "
-        "Wait about half a minute and try again, and avoid firing several requests at once."
+        "Hagstofa is rate-limiting this machine (HTTP 429) and did not recover after several waits. The limit "
+        "is released after a quiet spell of a few minutes: stop calling, wait ~5 minutes, then retry — and run "
+        "requests one at a time."
     )
 
 
 _hagstofa_meta_cache: dict[tuple[str, str], tuple[float, dict]] = {}
-_hagstofa_limits_cache: dict[str, dict] = {}
 HAGSTOFA_META_TTL_SECONDS = 3600
-# Fallbacks for the PX-Web limits, which Hagstofa publishes at `<base>?config` (checked live: is/en both
-# maxCells 100000 / maxValues 5000; a 101,088-cell selection got 403 while 94,770 succeeded).
+# PX-Web limits, as published at `<base>?config` (checked live: is and en both maxCells 100000 /
+# maxValues 5000; a 101,088-cell selection got 403 while 94,770 succeeded).
 HAGSTOFA_DEFAULT_LIMITS = {"maxCells": 100_000, "maxValues": 5_000}
 
 
 async def _hagstofa_limits(language: str) -> dict:
-    if language in _hagstofa_limits_cache:
-        return _hagstofa_limits_cache[language]
-    limits = dict(HAGSTOFA_DEFAULT_LIMITS)
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(15.0), headers={"User-Agent": USER_AGENT}) as client:
-            response = await client.get(_hagstofa_base(language), params={"config": ""})
-        config = response.json()
-        limits.update({k: int(config[k]) for k in ("maxCells", "maxValues") if k in config})
-    except (httpx.HTTPError, ValueError, TypeError):
-        pass
-    _hagstofa_limits_cache[language] = limits
-    return limits
+    # Hagstofa publishes these at `<base>?config`, but an extra request per process just feeds the rate
+    # limiter; the published values (identical for both languages) are pinned here instead.
+    return HAGSTOFA_DEFAULT_LIMITS
 
 
 class HagstofaValue(BaseModel):
@@ -267,6 +263,15 @@ def _bad_path_error(table_path: str, language: str = "is") -> ToolError:
     )
 
 
+def _meta_disk_path(language: str, table_path: str) -> Path:
+    import hashlib
+
+    from .hagstofa_catalog import cache_path
+
+    digest = hashlib.sha1(table_path.encode("utf-8")).hexdigest()[:16]
+    return cache_path().parent / "hagstofa_meta" / f"{language}-{digest}.json"
+
+
 async def _hagstofa_metadata(table_path: str, language: str = "is") -> dict:
     import time
 
@@ -275,6 +280,14 @@ async def _hagstofa_metadata(table_path: str, language: str = "is") -> dict:
     cached = _hagstofa_meta_cache.get(cache_key)
     if cached and time.time() - cached[0] < HAGSTOFA_META_TTL_SECONDS:
         return cached[1]
+    disk = _meta_disk_path(language, table_path)
+    try:  # a fresh process (e.g. one CLI call per step) still skips the request if we fetched it recently
+        stored = json.loads(disk.read_text(encoding="utf-8"))
+        if time.time() - stored["t"] < HAGSTOFA_META_TTL_SECONDS:
+            _hagstofa_meta_cache[cache_key] = (stored["t"], stored["data"])
+            return stored["data"]
+    except (OSError, ValueError, KeyError):
+        pass
     timeout = httpx.Timeout(30.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout, headers={"User-Agent": USER_AGENT}) as client:
         response = await _hagstofa_send(client, "GET", f"{base}{table_path}")
@@ -291,6 +304,11 @@ async def _hagstofa_metadata(table_path: str, language: str = "is") -> dict:
             f"'{table_path}' is a folder, not a table. Pass it to browse_hagstofa_tables to list what it contains."
         )
     _hagstofa_meta_cache[cache_key] = (time.time(), data)
+    try:
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        disk.write_text(json.dumps({"t": time.time(), "data": data}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
     return data
 
 
@@ -485,6 +503,7 @@ class HagstofaSearchHit(BaseModel):
     title_en: str | None = None
     folder: str
     updated: str | None = None
+    partial: bool = False
 
 
 class HagstofaSearchResult(BaseModel):
@@ -495,7 +514,8 @@ class HagstofaSearchResult(BaseModel):
     catalogue_refreshing: bool
     note: str = (
         "Locally cached index of Hagstofa's PX-Web catalogue (PX-Web has no search). Pass a hit's `path` unmodified "
-        "to get_hagstofa_table_info, then get_hagstofa_table_tool. Hits with `title_en` also exist in English "
+        "to get_hagstofa_table_info, then get_hagstofa_table_tool. Hits marked `partial` matched only some of your "
+        "words — check the title fits. Hits with `title_en` also exist in English "
         "(pass language='en' to the table tools for English variable names and labels). No hits: try fewer words."
     )
 
@@ -518,7 +538,9 @@ async def search_hagstofa_catalog(query: str, limit: int = 15) -> HagstofaSearch
     return HagstofaSearchResult(
         query=query,
         hits=[
-            HagstofaSearchHit(path=h.path, title=h.title, title_en=h.title_en, folder=h.folder, updated=h.updated)
+            HagstofaSearchHit(
+                path=h.path, title=h.title, title_en=h.title_en, folder=h.folder, updated=h.updated, partial=h.partial
+            )
             for h in hits
         ],
         tables_indexed=len(snapshot.tables),

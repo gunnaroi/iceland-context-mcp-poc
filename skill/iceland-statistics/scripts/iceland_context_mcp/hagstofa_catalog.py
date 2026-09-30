@@ -247,15 +247,30 @@ def _tokens(text: str) -> list[str]:
 
 
 def _word_matches(token: str, word: str) -> bool:
-    # Prefix match tolerates Icelandic inflection (verðbólga / verðbólgu / verðbólgunnar).
+    # Prefix/stem match tolerates Icelandic inflection (verðbólga / verðbólgu; Keflavíkurflugvöllur /
+    # Keflavíkurflugvelli, where the vowel inside the stem changes): a long token matches a word that shares
+    # all but its last few letters.
     if word.startswith(token):
         return True
-    return len(token) >= 6 and word.startswith(token[:-2])
+    if len(token) < 7:
+        return False
+    if word.startswith(token[:-2]):
+        return True
+    if len(token) < 12:  # short stems are too ambiguous for vowel-change matching (verðbólga / verðbótahækkun)
+        return False
+    return len(os.path.commonprefix([token, word])) >= len(token) - 4
+
+
+STOPWORDS = {
+    "fra", "til", "um", "og", "i", "a", "af", "med", "vid", "eftir", "the", "of", "and", "in", "by", "for", "to",
+    "from", "at", "on", "a", "an", "is", "are",
+}  # fmt: skip
 
 
 def _expand_query(query: str) -> list[list[str]]:
     """Return alternative token lists: the query itself plus each Icelandic translation found."""
-    variants = [_tokens(query)]
+    own = [t for t in _tokens(query) if t not in STOPWORDS] or _tokens(query)
+    variants = [own]
     lowered = query.lower()
     for en, is_terms in EN_TO_IS.items():
         if re.search(rf"\b{re.escape(en)}\b", lowered):
@@ -270,53 +285,83 @@ class CatalogSearchHit(BaseModel):
     folder: str
     updated: str | None = None
     score: float
+    partial: bool = False
+
+
+def _match_variant(variant: list[str], title_words, crumb_words, id_words) -> tuple[int, float]:
+    """(tokens matched, summed weight) — title match 3, folder match 2, path-id match 1."""
+    matched, score = 0, 0.0
+    for token in variant:
+        if any(_word_matches(token, w) for w in title_words):
+            matched, score = matched + 1, score + 3
+        elif any(_word_matches(token, w) for w in crumb_words):
+            matched, score = matched + 1, score + 2
+        elif any(_word_matches(token, w) for w in id_words):
+            matched, score = matched + 1, score + 1
+    return matched, score
 
 
 def search_catalog(snapshot: CatalogSnapshot, query: str, limit: int = 15) -> list[CatalogSearchHit]:
+    """Tables matching every word of the query (or of one of its translations) rank first. When that finds
+    fewer than 3 tables, tables matching some of the user's own words (one of two, else at least two) are added, marked partial —
+    a wordy query with one term the title doesn't use ('departures' for a table titled 'Passengers through
+    Keflavik airport') must not come back empty."""
     variants = _expand_query(query)
     if not variants:
         return []
-    hits: list[CatalogSearchHit] = []
+    full: list[CatalogSearchHit] = []
+    partial: list[CatalogSearchHit] = []
+    own = variants[0]
+    needed = 1 if len(own) == 2 else 2  # two-word query: one word is enough; longer: at least two
     for table in snapshot.tables:
         title_words = _tokens(table.title) + _tokens(table.title_en or "")
         crumb_words = [w for crumb in table.breadcrumb + table.breadcrumb_en for w in _tokens(crumb)]
         id_words = _tokens(table.path.replace("/", " ").replace("_", " "))
-        best = 0.0
+        best_full = 0.0
         for variant in variants:
-            score = 0.0
-            for token in variant:
-                if any(_word_matches(token, w) for w in title_words):
-                    score += 3
-                elif any(_word_matches(token, w) for w in crumb_words):
-                    score += 2
-                elif any(_word_matches(token, w) for w in id_words):
-                    score += 1
-                else:
-                    score = 0.0
-                    break  # every token of a variant must match somewhere
-            if score:
-                # Prefer the variant that matched the most/strongest tokens; favour the
-                # user's own wording (variant 0) over synonym expansions.
-                score = score / len(variant) + len(variant) * 0.1 + (0.5 if variant is variants[0] else 0)
-            best = max(best, score)
-        if best:
-            hits.append(
-                CatalogSearchHit(
-                    path=table.path,
-                    title=table.title,
-                    title_en=table.title_en,
-                    folder=" > ".join(table.breadcrumb),
-                    updated=table.updated,
-                    score=round(best, 2),
-                )
+            matched, score = _match_variant(variant, title_words, crumb_words, id_words)
+            if matched == len(variant):
+                # favour the variant that matched the most/strongest tokens, and the user's own wording
+                best_full = max(best_full, score / len(variant) + len(variant) * 0.1 + (0.5 if variant is own else 0))
+
+        def hit(score: float, is_partial: bool) -> CatalogSearchHit:
+            return CatalogSearchHit(
+                path=table.path,
+                title=table.title,
+                title_en=table.title_en,
+                folder=" > ".join(table.breadcrumb),
+                updated=table.updated,
+                score=round(score, 2),
+                partial=is_partial,
             )
-    # Ties on relevance: live series before frozen "eldra efni" (older material) ones, then the most
-    # recently updated, then the shorter (more general) title. Stable sorts, last key is primary.
-    hits.sort(key=lambda h: len(h.title))
-    hits.sort(key=lambda h: h.updated or "", reverse=True)
-    hits.sort(key=lambda h: "eldra" in fold(h.path) or "eldra" in fold(h.folder))
-    hits.sort(key=lambda h: -h.score)
-    return hits[:limit]
+
+        if best_full:
+            full.append(hit(best_full, False))
+        elif len(own) >= 2:
+            matched, score = _match_variant(own, title_words, crumb_words, id_words)
+            if matched >= needed:
+                partial.append(hit(score / len(own), True))
+
+    def ranked(hits: list[CatalogSearchHit]) -> list[CatalogSearchHit]:
+        # Ties on relevance: live series before frozen "eldra efni" ones, then the most recently
+        # updated, then the shorter (more general) title. Stable sorts, last key is primary.
+        hits.sort(key=lambda h: len(h.title))
+        hits.sort(key=lambda h: h.updated or "", reverse=True)
+        hits.sort(key=lambda h: "eldra" in fold(h.path) or "eldra" in fold(h.folder))
+        hits.sort(key=lambda h: -h.score)
+        seen: set[tuple[str, str]] = set()  # 46 tables are filed under two folders with the same id/title
+        unique = []
+        for h in hits:
+            key = (h.path.rsplit("/", 1)[-1], h.title)
+            if key not in seen:
+                seen.add(key)
+                unique.append(h)
+        return unique
+
+    results = ranked(full)
+    if len(results) < 3:
+        results += ranked(partial)
+    return results[:limit]
 
 
 def main() -> None:
